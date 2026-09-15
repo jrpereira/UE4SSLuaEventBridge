@@ -22,6 +22,7 @@ EXPORTS
     ?IsInGameThread@Unreal@RC@@YA_NXZ
     ?RegisterProcessEventPostCallback@Hook@Unreal@RC@@YAXV?$function@$$A6AXPEAVUObject@Unreal@RC@@PEAVUFunction@23@PEAX@Z@std@@@Z
     ?registry@Lua@LuaMadeSimple@RC@@QEBAAEBVRegistry@123@XZ
+    ?get_lua_state@Lua@LuaMadeSimple@RC@@QEBAPEAUlua_State@@XZ
     ?make_ref@Registry@Lua@LuaMadeSimple@RC@@QEBAHXZ
     ?get_function_ref@Registry@Lua@LuaMadeSimple@RC@@QEBAXH@Z
     ?register_function@Lua@LuaMadeSimple@RC@@QEBAXAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@AEBQ6AHAEBV123@@Z@Z

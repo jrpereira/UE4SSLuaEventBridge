@@ -1,4 +1,5 @@
 #include <UE4SSLuaEventBridge/EnhancedInputBackend.hpp>
+#include <UE4SSLuaEventBridge/SessionAliasIndex.hpp>
 #include <UE4SSLuaEventBridge/UE4SSABI.hpp>
 
 #include <atomic>
@@ -34,7 +35,7 @@ public:
     UE4SSLuaEventBridgeMod()
     {
         ModName = L"UE4SSLuaEventBridge";
-        ModVersion = L"0.2.1";
+        ModVersion = L"0.2.2";
         ModDescription = L"Native Unreal event callbacks for UE4SS Lua mods";
         ModAuthors = L"UE4SS Lua Event Bridge contributors";
         ModIntendedSDKVersion = L"3.0.1-97b7e501";
@@ -81,12 +82,23 @@ public:
         }
     }
 
-    void on_lua_start(RC::StringViewType, Lua& lua, Lua&, Lua&, Lua*) override
+    void on_lua_start(RC::StringViewType, Lua& lua, Lua& main_lua, Lua& async_lua, Lua* hook_lua) override
     {
         auto session = std::make_unique<UE4SSLuaEventBridge::LuaSession>();
         session->id = next_session_id_.fetch_add(1);
         session->lua = &lua;
-        sessions_.insert_or_assign(&lua, std::move(session));
+        auto* session_ptr = session.get();
+        const auto register_state = [&](Lua* state) {
+            if (!state) return;
+            auto* raw_state = state->get_lua_state();
+            if (!raw_state) return;
+            session_index_.bind(raw_state, session_ptr);
+        };
+        register_state(&lua);
+        register_state(&main_lua);
+        register_state(&async_lua);
+        register_state(hook_lua);
+        sessions_.insert_or_assign(session_ptr->id, std::move(session));
 
         lua.register_function("UE4SSLuaEventBridge_GetVersion", &get_version);
         lua.register_function("UE4SSLuaEventBridge_GetCapabilities", &get_capabilities);
@@ -134,24 +146,28 @@ public:
 
     void on_lua_stop(RC::StringViewType, Lua& lua, Lua&, Lua&, Lua*) override
     {
-        const auto it = sessions_.find(&lua);
-        if (it == sessions_.end()) return;
-        it->second->active.store(false);
-        backend_.unsubscribe_all(*it->second);
-        retired_sessions_.push_back(std::move(it->second));
-        sessions_.erase(it);
+        auto* session = session_for(lua);
+        if (!session) return;
+        session->active.store(false);
+        backend_.unsubscribe_all(*session);
+        session_index_.unbind(session);
+        const auto owned = sessions_.find(session->id);
+        if (owned != sessions_.end())
+        {
+            retired_sessions_.push_back(std::move(owned->second));
+            sessions_.erase(owned);
+        }
     }
 
     UE4SSLuaEventBridge::LuaSession* session_for(const Lua& lua)
     {
-        const auto it = sessions_.find(const_cast<Lua*>(&lua));
-        return it == sessions_.end() ? nullptr : it->second.get();
+        return session_index_.find(lua.get_lua_state());
     }
 
 private:
     static int get_version(const Lua& lua)
     {
-        lua.set_string("0.2.1");
+        lua.set_string("0.2.2");
         return 1;
     }
 
@@ -229,7 +245,8 @@ private:
 
     UE4SSLuaEventBridge::EnhancedInputBackend backend_;
     std::atomic_uint64_t next_session_id_{1};
-    std::unordered_map<Lua*, std::unique_ptr<UE4SSLuaEventBridge::LuaSession>> sessions_;
+    std::unordered_map<uint64_t, std::unique_ptr<UE4SSLuaEventBridge::LuaSession>> sessions_;
+    UE4SSLuaEventBridge::SessionAliasIndex<lua_State, UE4SSLuaEventBridge::LuaSession> session_index_;
     std::vector<std::unique_ptr<UE4SSLuaEventBridge::LuaSession>> retired_sessions_;
 };
 }

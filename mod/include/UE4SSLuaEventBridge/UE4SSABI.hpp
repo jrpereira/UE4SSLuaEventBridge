@@ -11,6 +11,8 @@
 
 #define UE4SS_IMPORT __declspec(dllimport)
 
+struct lua_State;
+
 namespace RC
 {
 using StringType = std::wstring;
@@ -36,6 +38,7 @@ public:
     };
 
     UE4SS_IMPORT const Registry& registry() const;
+    UE4SS_IMPORT lua_State* get_lua_state() const;
     UE4SS_IMPORT void register_function(const std::string& name, const LuaFunction& function) const;
     UE4SS_IMPORT void execute_string(std::string_view source) const;
     UE4SS_IMPORT bool is_function(int32_t index = 1) const;
