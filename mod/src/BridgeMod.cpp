@@ -35,7 +35,7 @@ public:
     UE4SSLuaEventBridgeMod()
     {
         ModName = L"UE4SSLuaEventBridge";
-        ModVersion = L"0.2.2";
+        ModVersion = L"0.2.3";
         ModDescription = L"Native Unreal event callbacks for UE4SS Lua mods";
         ModAuthors = L"UE4SS Lua Event Bridge contributors";
         ModIntendedSDKVersion = L"3.0.1-97b7e501";
@@ -117,7 +117,16 @@ public:
                     assert(type(action) == "string", "action must be an object path")
                     assert(type(event) == "string", "event must be an ETriggerEvent name")
                     assert(type(callback) == "function", "callback must be a function")
-                    return UE4SSLuaEventBridge_BindAction(action, event,
+                    local phases = {
+                        Triggered = 1,
+                        Started = 2,
+                        Ongoing = 3,
+                        Canceled = 4,
+                        Completed = 5,
+                    }
+                    local phase = phases[event]
+                    assert(phase ~= nil, "unsupported ETriggerEvent name")
+                    return UE4SSLuaEventBridge_BindAction(action, phase,
                         function(handle, sourceAction, phase, elapsed, triggered, x, y, z, valueType)
                             callback({
                                 subscription = handle,
@@ -167,7 +176,7 @@ public:
 private:
     static int get_version(const Lua& lua)
     {
-        lua.set_string("0.2.2");
+        lua.set_string("0.2.3");
         return 1;
     }
 
@@ -179,14 +188,14 @@ private:
         return 3;
     }
 
-    static TriggerEvent parse_phase(std::string_view phase)
+    static std::pair<TriggerEvent, std::string_view> parse_phase(int64_t phase)
     {
-        if (phase == "Triggered") return TriggerEvent::Triggered;
-        if (phase == "Started") return TriggerEvent::Started;
-        if (phase == "Ongoing") return TriggerEvent::Ongoing;
-        if (phase == "Canceled") return TriggerEvent::Canceled;
-        if (phase == "Completed") return TriggerEvent::Completed;
-        return TriggerEvent::None;
+        if (phase == 1) return {TriggerEvent::Triggered, "Triggered"};
+        if (phase == 2) return {TriggerEvent::Started, "Started"};
+        if (phase == 3) return {TriggerEvent::Ongoing, "Ongoing"};
+        if (phase == 4) return {TriggerEvent::Canceled, "Canceled"};
+        if (phase == 5) return {TriggerEvent::Completed, "Completed"};
+        return {TriggerEvent::None, {}};
     }
 
     static int bind_action(const Lua& lua)
@@ -212,8 +221,8 @@ private:
         }
 
         const std::string action_path(lua.get_string(1));
-        const std::string phase_name(lua.get_string(2));
-        const auto phase = parse_phase(phase_name);
+        const auto [phase, phase_view] = parse_phase(lua.get_integer(2));
+        const std::string phase_name(phase_view);
         if (action_path.empty() || phase == TriggerEvent::None)
         {
             lua.set_nil();
