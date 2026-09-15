@@ -13,8 +13,8 @@ if(WIN32)
     add_custom_command(
         OUTPUT "${UE4SS_IMPORT_LIB}"
         COMMAND "${MSVC_LIB_EXE}" /nologo /machine:x64
-            /def:"${CMAKE_CURRENT_SOURCE_DIR}/abi/UE4SS-97b7e501.def"
-            /out:"${UE4SS_IMPORT_LIB}"
+            "/def:${CMAKE_CURRENT_SOURCE_DIR}/abi/UE4SS-97b7e501.def"
+            "/out:${UE4SS_IMPORT_LIB}"
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/abi/UE4SS-97b7e501.def"
         VERBATIM
     )
