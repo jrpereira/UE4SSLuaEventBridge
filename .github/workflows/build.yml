@@ -11,6 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: tests/run-portable-tests.sh
+      - run: bash tests/run-abi-syntax-test.sh
 
   windows-dll:
     runs-on: windows-2022

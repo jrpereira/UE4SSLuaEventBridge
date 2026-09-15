@@ -19,7 +19,7 @@ local capabilities = bridge.GetCapabilities()
 Capabilities are authoritative. Consumers must not infer support from the
 bridge version.
 
-Planned capability keys:
+Capability keys:
 
 ```lua
 {
@@ -29,6 +29,10 @@ Planned capability keys:
     target_ue4ss_commit = "97b7e501"
 }
 ```
+
+`enhanced_input` reports whether the ABI-pinned backend initialized. A valid
+subscription can exist before its action or local-player input component is
+loaded; the bridge attaches it when those objects appear.
 
 ## Enhanced Input subscription
 
@@ -66,6 +70,9 @@ The callback payload will be:
 }
 ```
 
+`receiver` is currently fixed to `local_player`; omitting it has the same
+meaning. Other receiver scopes are not supported by API version 1.
+
 ## Ownership and cleanup
 
 Subscription handles belong to the Lua state that created them. Another Lua
@@ -85,4 +92,3 @@ The bridge stores subscription intent separately from the live native binding.
 When a player controller or Enhanced Input component is reconstructed, the
 backend detaches the obsolete binding and attaches the same subscription to the
 new component. The Lua callback and handle remain unchanged.
-

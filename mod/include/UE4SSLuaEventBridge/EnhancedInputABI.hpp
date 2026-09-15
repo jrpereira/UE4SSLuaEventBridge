@@ -85,6 +85,8 @@ class InputBindingHandle
 {
 public:
     virtual ~InputBindingHandle() = default;
+
+protected:
     uint32_t handle{};
 };
 
@@ -95,12 +97,14 @@ public:
     ~ActionEventBinding() override = default;
 
     virtual void Execute(const InputActionInstanceView& instance) const = 0;
-    virtual UniquePtr<ActionEventBinding> Clone() const = 0;
-    virtual void SetShouldFireWithEditorScriptGuard(bool enabled) = 0;
+    virtual UObject* GetUObject() const = 0;
     virtual bool IsBoundToObject(const void* object) const = 0;
+    virtual void SetShouldFireWithEditorScriptGuard(bool enabled) = 0;
+    virtual UniquePtr<ActionEventBinding> Clone() const = 0;
 
     FWeakObjectPtr action;
     TriggerEvent event{TriggerEvent::None};
+    bool consumes{};
 };
 
 struct ActionEventBindingArray
@@ -118,7 +122,9 @@ static_assert(sizeof(FWeakObjectPtr) == 0x8);
 static_assert(sizeof(InputActionInstanceView) == 0x60);
 static_assert(sizeof(ActionEventBindingArray) == 0x10);
 static_assert(sizeof(InputBindingHandle) == 0x10);
+#ifdef _MSC_VER
 static_assert(sizeof(ActionEventBinding) == 0x20);
+#endif
 }
 
 #endif

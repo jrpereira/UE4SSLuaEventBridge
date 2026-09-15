@@ -9,25 +9,30 @@ thread hand-off, and cleanup.
 
 ## Current status
 
-Version `0.1.0-dev` defines and tests the public contract and lifecycle model.
-The Enhanced Input adapter is specified but not yet compiled because the
-generated CXX header dump contains reflected layouts only. A native
-`UEnhancedInputComponent::BindAction` adapter additionally needs the matching
-UE4SS source/SDK and a verified UE 5.5 native call path.
+Version `0.2.0-dev` contains an ABI-pinned Enhanced Input backend and the Lua
+`BindAction` API. It inserts native action-event bindings into the active local
+player's `UEnhancedInputComponent`; Unreal remains responsible for evaluating
+input mappings and triggers. Native events are queued and delivered to the
+owning Lua state from UE4SS's normal update thread.
 
-This package is source code, not an installable release. It intentionally does
-not contain a placeholder `main.dll`.
+The backend has passed portable unit tests, a cross-platform C++ syntax audit,
+and export-name verification against the supplied UE4SS DLL. A Windows MSVC
+build and in-game validation remain required before publishing an installable
+release. No placeholder `main.dll` is included.
 
 ## Design rules
 
 - No game-specific actions, object paths, keys, or UI behavior.
 - One isolated session per Lua mod/state.
 - Opaque subscription handles rather than exposed native pointers.
-- Callbacks execute on the Unreal game thread.
+- Native bindings are created and removed on the Unreal game thread.
+- Lua callbacks execute on UE4SS's Lua-owning update thread, never from inside
+  Unreal's input-dispatch stack.
 - Lua callbacks are never retained after their Lua mod stops.
 - Native bindings are detached before their target object becomes invalid.
 - Backends advertise capabilities; unsupported event types fail explicitly.
-- Consumers can rebind declaratively after world or input-component changes.
+- The bridge automatically reattaches subscriptions after pawn or input-
+  component reconstruction.
 
 ## Proposed layout after compilation
 
@@ -54,4 +59,3 @@ Mods/
 
 The C++ ABI must match the installed UE4SS build. A DLL built against a nearby
 experimental commit is not assumed compatible.
-

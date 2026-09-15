@@ -133,6 +133,7 @@ class UObject : public UObjectBase
 {
 public:
     UE4SS_IMPORT std::wstring GetPathName(UObject* stop_outer = nullptr) const;
+    UE4SS_IMPORT void* GetValuePtrByPropertyNameInChain(const wchar_t* property_name);
 };
 
 class UStruct : public UObject
