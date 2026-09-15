@@ -194,9 +194,26 @@ void EnhancedInputBackend::initialize()
     RC::Unreal::FUObjectArray::AddUObjectDeleteListener(delete_listener_.get());
     RC::Unreal::Hook::RegisterProcessEventPostCallback([](UObject*, RC::Unreal::UFunction*, void*) {
         auto* backend = active_backend;
-        if (backend && backend->work_pending_.load(std::memory_order_acquire) && RC::Unreal::IsInGameThread())
+        if (!backend || !backend->work_pending_.load(std::memory_order_acquire))
         {
-            backend->process_game_thread_work();
+            return;
+        }
+
+        // UE4SS installs ProcessEvent hooks before UGameEngine::Tick records
+        // the game-thread id. IsInGameThread() throws during that window. Do
+        // not let the exception escape: UE4SS removes callbacks that throw.
+        // Keeping work_pending_ set makes a later ProcessEvent retry once the
+        // engine has completed thread initialization.
+        try
+        {
+            if (RC::Unreal::IsInGameThread())
+            {
+                backend->process_game_thread_work();
+            }
+        }
+        catch (...)
+        {
+            return;
         }
     });
 }
