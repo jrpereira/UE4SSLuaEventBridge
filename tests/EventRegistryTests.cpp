@@ -1,4 +1,5 @@
 #include <UE4SSLuaEventBridge/EventRegistry.hpp>
+#include <UE4SSLuaEventBridge/SessionAliasIndex.hpp>
 
 #include <cassert>
 #include <cstddef>
@@ -39,5 +40,29 @@ int main()
     assert(registry.unsubscribe_all(2) == 1);
     assert(registry.snapshot().empty());
     assert(!registry.unsubscribe(2, second));
-}
 
+    struct State {};
+    struct Session {};
+    State parent, main_thread, async_thread, hook_thread, unrelated;
+    Session first_session, second_session;
+    SessionAliasIndex<State, Session> sessions;
+
+    sessions.bind(&parent, &first_session);
+    sessions.bind(&main_thread, &first_session);
+    sessions.bind(&async_thread, &first_session);
+    sessions.bind(&hook_thread, &first_session);
+    sessions.bind(&unrelated, &second_session);
+
+    assert(sessions.size() == 5);
+    assert(sessions.find(&parent) == &first_session);
+    assert(sessions.find(&main_thread) == &first_session);
+    assert(sessions.find(&async_thread) == &first_session);
+    assert(sessions.find(&hook_thread) == &first_session);
+    assert(sessions.find(&unrelated) == &second_session);
+
+    assert(sessions.unbind(&first_session) == 4);
+    assert(sessions.find(&parent) == nullptr);
+    assert(sessions.find(&main_thread) == nullptr);
+    assert(sessions.find(&unrelated) == &second_session);
+    assert(sessions.size() == 1);
+}

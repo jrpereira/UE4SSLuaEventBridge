@@ -9,16 +9,19 @@ thread hand-off, and cleanup.
 
 ## Current status
 
-Version `0.2.1-dev` contains an ABI-pinned Enhanced Input backend and the Lua
+Version `0.2.2` contains an ABI-pinned Enhanced Input backend and the Lua
 `BindAction` API. It inserts native action-event bindings into the active local
 player's `UEnhancedInputComponent`; Unreal remains responsible for evaluating
 input mappings and triggers. Native events are queued and delivered to the
 owning Lua state from UE4SS's normal update thread.
 
+Version 0.2.2 registers UE4SS's parent, main, async, and hook Lua threads as
+aliases of one owning session. A callback API call made from a mod's main Lua
+thread therefore resolves the same session created by `on_lua_start`.
+
 The backend has passed portable unit tests, a cross-platform C++ syntax audit,
-and export-name verification against the supplied UE4SS DLL. A Windows MSVC
-build and in-game validation remain required before publishing an installable
-release. No placeholder `main.dll` is included.
+and export-name verification against the supplied UE4SS DLL. Release archives
+are built with MSVC by GitHub Actions against the ABI-pinned import definition.
 
 ## Design rules
 
