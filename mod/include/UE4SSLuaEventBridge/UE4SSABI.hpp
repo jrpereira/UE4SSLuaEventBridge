@@ -36,7 +36,7 @@ public:
     };
 
     UE4SS_IMPORT const Registry& registry() const;
-    UE4SS_IMPORT void register_function(const std::string& name, LuaFunction function) const;
+    UE4SS_IMPORT void register_function(const std::string& name, const LuaFunction& function) const;
     UE4SS_IMPORT void execute_string(std::string_view source) const;
     UE4SS_IMPORT bool is_function(int32_t index = 1) const;
     UE4SS_IMPORT std::string_view get_string(int32_t index = 1) const;
