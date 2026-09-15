@@ -41,7 +41,11 @@ public:
         active_mod = this;
     }
 
-    ~UE4SSLuaEventBridgeMod() override { active_mod = nullptr; }
+    ~UE4SSLuaEventBridgeMod() override
+    {
+        backend_.shutdown();
+        active_mod = nullptr;
+    }
 
     void on_unreal_init() override { backend_.initialize(); }
 
@@ -72,7 +76,7 @@ public:
             }
             catch (...)
             {
-                subscription->active.store(false);
+                backend_.unsubscribe(*session, subscription->id);
             }
         }
     }
@@ -116,6 +120,8 @@ public:
                 end,
                 SubscribeEnhancedInput = function(spec, callback)
                     assert(type(spec) == "table", "spec must be a table")
+                    assert(spec.receiver == nil or spec.receiver == "local_player",
+                        "only receiver='local_player' is supported")
                     return UE4SSLuaEventBridge.BindAction(spec.action, spec.event, callback)
                 end,
                 Unbind = UE4SSLuaEventBridge_Unbind,

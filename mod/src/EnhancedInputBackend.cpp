@@ -39,6 +39,22 @@ UClass* object_class(UObject* object)
     std::memcpy(&result, reinterpret_cast<std::byte*>(object) + 0x10, sizeof(result));
     return result;
 }
+
+UObject* object_property(UObject* object, const wchar_t* name)
+{
+    if (!object)
+    {
+        return nullptr;
+    }
+    auto* storage = object->GetValuePtrByPropertyNameInChain(name);
+    if (!storage)
+    {
+        return nullptr;
+    }
+    UObject* result{};
+    std::memcpy(&result, storage, sizeof(result));
+    return result;
+}
 }
 
 UObject* ABI::InputActionInstanceView::source_action() const { return read_at<UObject*>(*this, 0x00); }
@@ -51,8 +67,9 @@ float ABI::InputActionInstanceView::elapsed_processed() const { return read_at<f
 float ABI::InputActionInstanceView::elapsed_triggered() const { return read_at<float>(*this, 0x5C); }
 
 ABI::ActionEventBinding::ActionEventBinding(const UObject* source_action, ABI::TriggerEvent trigger, uint32_t binding_handle)
-    : handle(binding_handle), action(source_action), event(trigger)
+    : action(source_action), event(trigger)
 {
+    handle = binding_handle;
 }
 
 struct EnhancedInputBackend::LiveBinding
@@ -83,6 +100,10 @@ public:
         }
     }
 
+    UObject* GetUObject() const override { return nullptr; }
+    bool IsBoundToObject(const void*) const override { return false; }
+    void SetShouldFireWithEditorScriptGuard(bool) override {}
+
     ABI::UniquePtr<ABI::ActionEventBinding> Clone() const override
     {
         void* memory = FMemory::Malloc(sizeof(NativeBinding), alignof(NativeBinding));
@@ -93,9 +114,6 @@ public:
         return ABI::UniquePtr<ABI::ActionEventBinding>(
             ::new (memory) NativeBinding(*backend_, action.Get(), event, handle, owner_));
     }
-
-    void SetShouldFireWithEditorScriptGuard(bool) override {}
-    bool IsBoundToObject(const void*) const override { return false; }
 
     static void operator delete(void* memory) noexcept { FMemory::Free(memory); }
     static void operator delete(void* memory, std::size_t) noexcept { FMemory::Free(memory); }
@@ -129,9 +147,15 @@ private:
 
 EnhancedInputBackend::EnhancedInputBackend() = default;
 
-EnhancedInputBackend::~EnhancedInputBackend()
+EnhancedInputBackend::~EnhancedInputBackend() { shutdown(); }
+
+void EnhancedInputBackend::shutdown()
 {
-    initialized_.store(false);
+    if (!initialized_.exchange(false))
+    {
+        return;
+    }
+
     active_backend = nullptr;
     if (create_listener_)
     {
@@ -141,6 +165,19 @@ EnhancedInputBackend::~EnhancedInputBackend()
     {
         RC::Unreal::FUObjectArray::RemoveUObjectDeleteListener(delete_listener_.get());
     }
+
+    std::scoped_lock lock(mutex_);
+    for (auto& [id, subscription] : subscriptions_)
+    {
+        subscription->active.store(false, std::memory_order_release);
+    }
+    for (auto& binding : bindings_)
+    {
+        detach(binding);
+    }
+    bindings_.clear();
+    subscriptions_.clear();
+    events_.clear();
 }
 
 void EnhancedInputBackend::initialize()
@@ -247,14 +284,11 @@ void EnhancedInputBackend::enqueue(
 
 void EnhancedInputBackend::note_object_created(const UObjectBase* object)
 {
-    const auto expected_class = component_class_.load(std::memory_order_acquire);
-    if (!expected_class || !object)
-    {
-        return;
-    }
-    void* created_class{};
-    std::memcpy(&created_class, reinterpret_cast<const std::byte*>(object) + 0x10, sizeof(created_class));
-    if (created_class == expected_class)
+    // The create listener can run before the first Enhanced Input component or
+    // requested action exists. Schedule one rescan for any newly created
+    // UObject; the ProcessEvent post-hook performs the actual work after
+    // construction has completed and only when work_pending_ is set.
+    if (object && initialized_.load(std::memory_order_acquire))
     {
         work_pending_.store(true, std::memory_order_release);
     }
@@ -283,6 +317,35 @@ UObject* EnhancedInputBackend::resolve_action(const std::wstring& path) const
         }
     }
     return nullptr;
+}
+
+std::vector<UObject*> EnhancedInputBackend::resolve_local_player_components() const
+{
+    std::vector<UObject*> controllers;
+    RC::Unreal::UObjectGlobals::FindAllOf(L"PlayerController", controllers);
+
+    for (auto* controller : controllers)
+    {
+        auto* pawn = object_property(controller, L"AcknowledgedPawn");
+        if (!pawn)
+        {
+            pawn = object_property(controller, L"Pawn");
+        }
+
+        auto* component = object_property(pawn, L"InputComponent");
+        if (validate_component(component))
+        {
+            return {component};
+        }
+
+        component = object_property(controller, L"InputComponent");
+        if (validate_component(component))
+        {
+            return {component};
+        }
+    }
+
+    return {};
 }
 
 bool EnhancedInputBackend::validate_component(UObject* component) const
@@ -369,12 +432,7 @@ void EnhancedInputBackend::process_game_thread_work()
 {
     work_pending_.store(false, std::memory_order_release);
 
-    std::vector<UObject*> components;
-    RC::Unreal::UObjectGlobals::FindAllOf(L"EnhancedInputComponent", components);
-    if (!components.empty())
-    {
-        component_class_.store(object_class(components.front()), std::memory_order_release);
-    }
+    const auto components = resolve_local_player_components();
 
     std::scoped_lock lock(mutex_);
 

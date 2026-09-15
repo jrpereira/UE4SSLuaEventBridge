@@ -50,6 +50,7 @@ public:
     EnhancedInputBackend& operator=(const EnhancedInputBackend&) = delete;
 
     void initialize();
+    void shutdown();
     [[nodiscard]] bool available() const { return initialized_.load(); }
 
     uint64_t subscribe(
@@ -76,6 +77,7 @@ private:
     void note_object_created(const RC::Unreal::UObjectBase* object);
     void note_object_deleted(const RC::Unreal::UObjectBase* object);
     RC::Unreal::UObject* resolve_action(const std::wstring& path) const;
+    std::vector<RC::Unreal::UObject*> resolve_local_player_components() const;
     bool validate_component(RC::Unreal::UObject* component) const;
     NativeBinding* attach(
         RC::Unreal::UObject* component,
@@ -85,7 +87,6 @@ private:
 
     std::atomic_bool initialized_{false};
     std::atomic_bool work_pending_{false};
-    std::atomic<void*> component_class_{nullptr};
     std::atomic_uint64_t next_subscription_{1};
     std::atomic_uint32_t next_binding_handle_{0x80000000u};
 
