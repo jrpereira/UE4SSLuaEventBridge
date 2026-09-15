@@ -9,7 +9,7 @@ thread hand-off, and cleanup.
 
 ## Current status
 
-Version `0.2.0-dev` contains an ABI-pinned Enhanced Input backend and the Lua
+Version `0.2.1-dev` contains an ABI-pinned Enhanced Input backend and the Lua
 `BindAction` API. It inserts native action-event bindings into the active local
 player's `UEnhancedInputComponent`; Unreal remains responsible for evaluating
 input mappings and triggers. Native events are queued and delivered to the
@@ -34,7 +34,7 @@ release. No placeholder `main.dll` is included.
 - The bridge automatically reattaches subscriptions after pawn or input-
   component reconstruction.
 
-## Proposed layout after compilation
+## Layout after compilation
 
 ```text
 Mods/
