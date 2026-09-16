@@ -27,13 +27,43 @@ namespace
 using RC::LuaMadeSimple::Lua;
 using UE4SSLuaEventBridge::EnhancedInputABI::TriggerEvent;
 
-constexpr int32_t packed_action_word_count = 64;
-constexpr int32_t packed_action_max_length = packed_action_word_count * 8;
-constexpr int32_t packed_action_phase_index = 2 + packed_action_word_count;
-constexpr int32_t packed_action_callback_index = packed_action_phase_index + 1;
+constexpr int32_t packed_path_word_count = 64;
+constexpr int32_t packed_path_max_length = packed_path_word_count * 8;
+constexpr int32_t bind_callback_index = packed_path_word_count + 4; // target + length + words + phase + callback
 
 class UE4SSLuaEventBridgeMod;
 UE4SSLuaEventBridgeMod* active_mod{};
+
+bool decode_packed_path(const Lua& lua, std::string& path, std::string& error)
+{
+    const auto length = lua.get_integer(1);
+    if (length <= 0 || length > packed_path_max_length)
+    {
+        error = "invalid encoded object path length";
+        return false;
+    }
+
+    std::array<uint64_t, packed_path_word_count> words{};
+    for (int32_t index = 0; index < packed_path_word_count; ++index)
+    {
+        words[static_cast<std::size_t>(index)] = static_cast<uint64_t>(lua.get_integer(1));
+    }
+
+    path.assign(static_cast<std::size_t>(length), '\0');
+    for (int64_t index = 0; index < length; ++index)
+    {
+        const auto word = words[static_cast<std::size_t>(index / 8)];
+        const auto shift = static_cast<uint32_t>((index % 8) * 8);
+        const auto byte = static_cast<uint8_t>((word >> shift) & 0xFFu);
+        if (byte == 0)
+        {
+            error = "invalid encoded object path byte";
+            return false;
+        }
+        path[static_cast<std::size_t>(index)] = static_cast<char>(byte);
+    }
+    return true;
+}
 
 class UE4SSLuaEventBridgeMod final : public RC::CppUserModBase
 {
@@ -41,8 +71,8 @@ public:
     UE4SSLuaEventBridgeMod()
     {
         ModName = L"UE4SSLuaEventBridge";
-        ModVersion = L"0.2.7";
-        ModDescription = L"Native Unreal event callbacks for UE4SS Lua mods";
+        ModVersion = L"0.2.8";
+        ModDescription = L"Game-agnostic native Enhanced Input callbacks for UE4SS Lua mods";
         ModAuthors = L"UE4SS Lua Event Bridge contributors";
         ModIntendedSDKVersion = L"3.0.1-97b7e501";
         active_mod = this;
@@ -108,22 +138,49 @@ public:
 
         lua.register_function("UE4SSLuaEventBridge_GetVersion", &get_version);
         lua.register_function("UE4SSLuaEventBridge_GetCapabilities", &get_capabilities);
+        lua.register_function("UE4SSLuaEventBridge_OpenInputComponent", &open_input_component);
+        lua.register_function("UE4SSLuaEventBridge_CloseInputComponent", &close_input_component);
         lua.register_function("UE4SSLuaEventBridge_BindAction", &bind_action);
         lua.register_function("UE4SSLuaEventBridge_Unbind", &unbind);
         lua.register_function("UE4SSLuaEventBridge_UnbindAll", &unbind_all);
         lua.execute_string(R"lua(
+            local function __UE4SSLuaEventBridge_PackPath(path)
+                assert(type(path) == "string", "object path must be a string")
+                assert(#path > 0 and #path <= 512, "object path must be 1..512 bytes")
+                local words = {}
+                for i = 1, 64 do words[i] = 0 end
+                for i = 1, #path do
+                    local word = ((i - 1) // 8) + 1
+                    local shift = ((i - 1) % 8) * 8
+                    words[word] = words[word] | (string.byte(path, i) << shift)
+                end
+                local args = { #path }
+                for i = 1, 64 do args[#args + 1] = words[i] end
+                return args
+            end
+
             UE4SSLuaEventBridge = {
-                API_VERSION = 1,
+                API_VERSION = 2,
                 GetVersion = UE4SSLuaEventBridge_GetVersion,
                 GetCapabilities = function()
-                    local api, enhancedInput, target = UE4SSLuaEventBridge_GetCapabilities()
-                    return { api = api, enhanced_input = enhancedInput, target_ue4ss_commit = target }
+                    local api, enhancedInput, explicitTarget, target = UE4SSLuaEventBridge_GetCapabilities()
+                    return {
+                        api = api,
+                        enhanced_input = enhancedInput,
+                        explicit_target = explicitTarget,
+                        target_ue4ss_commit = target,
+                    }
                 end,
-                BindAction = function(action, event, callback)
+                OpenInputComponent = function(componentPath)
+                    local args = __UE4SSLuaEventBridge_PackPath(componentPath)
+                    return UE4SSLuaEventBridge_OpenInputComponent(table.unpack(args, 1, #args))
+                end,
+                CloseInputComponent = UE4SSLuaEventBridge_CloseInputComponent,
+                BindAction = function(targetHandle, action, event, callback)
+                    assert(type(targetHandle) == "number", "targetHandle must come from OpenInputComponent")
                     assert(type(action) == "string", "action must be an object path")
                     assert(type(event) == "string", "event must be an ETriggerEvent name")
                     assert(type(callback) == "function", "callback must be a function")
-                    assert(#action > 0 and #action <= 512, "action object path must be 1..512 bytes")
                     local phases = {
                         Triggered = 1,
                         Started = 2,
@@ -134,19 +191,9 @@ public:
                     local phase = phases[event]
                     assert(phase ~= nil, "unsupported ETriggerEvent name")
 
-                    -- Keep std::string/std::string_view out of the Lua -> C++ ABI.
-                    -- Transient Enhanced Input object paths in UE5 can easily exceed
-                    -- 128 bytes, so encode up to 512 bytes as primitive 64-bit words.
-                    local words = {}
-                    for i = 1, 64 do words[i] = 0 end
-                    for i = 1, #action do
-                        local word = ((i - 1) // 8) + 1
-                        local shift = ((i - 1) % 8) * 8
-                        words[word] = words[word] | (string.byte(action, i) << shift)
-                    end
-
-                    local args = { #action }
-                    for i = 1, 64 do args[#args + 1] = words[i] end
+                    local packed = __UE4SSLuaEventBridge_PackPath(action)
+                    local args = { targetHandle }
+                    for i = 1, #packed do args[#args + 1] = packed[i] end
                     args[#args + 1] = phase
                     args[#args + 1] = function(handle, sourceAction, phaseName, elapsed, triggered, x, y, z, valueType)
                         callback({
@@ -163,9 +210,8 @@ public:
                 end,
                 SubscribeEnhancedInput = function(spec, callback)
                     assert(type(spec) == "table", "spec must be a table")
-                    assert(spec.receiver == nil or spec.receiver == "local_player",
-                        "only receiver='local_player' is supported")
-                    return UE4SSLuaEventBridge.BindAction(spec.action, spec.event, callback)
+                    assert(type(spec.target) == "number", "spec.target must come from OpenInputComponent")
+                    return UE4SSLuaEventBridge.BindAction(spec.target, spec.action, spec.event, callback)
                 end,
                 Unbind = UE4SSLuaEventBridge_Unbind,
                 Unsubscribe = UE4SSLuaEventBridge_Unbind,
@@ -198,16 +244,17 @@ public:
 private:
     static int get_version(const Lua& lua)
     {
-        lua.set_string("0.2.7");
+        lua.set_string("0.2.8");
         return 1;
     }
 
     static int get_capabilities(const Lua& lua)
     {
-        lua.set_integer(1);
+        lua.set_integer(2);
         lua.set_bool(active_mod && active_mod->backend_.available());
+        lua.set_bool(true); // explicit EnhancedInputComponent target required
         lua.set_string("97b7e501");
-        return 3;
+        return 4;
     }
 
     static std::pair<TriggerEvent, std::string_view> parse_phase(int64_t phase)
@@ -218,6 +265,50 @@ private:
         if (phase == 4) return {TriggerEvent::Canceled, "Canceled"};
         if (phase == 5) return {TriggerEvent::Completed, "Completed"};
         return {TriggerEvent::None, {}};
+    }
+
+    static int open_input_component(const Lua& lua)
+    {
+        if (!active_mod || !active_mod->backend_.available())
+        {
+            lua.set_nil();
+            lua.set_string("Enhanced Input backend is not initialized");
+            return 2;
+        }
+        auto* session = active_mod->session_for(lua);
+        if (!session)
+        {
+            lua.set_nil();
+            lua.set_string("Lua session is not registered");
+            return 2;
+        }
+
+        std::string component_path;
+        std::string error;
+        if (!decode_packed_path(lua, component_path, error))
+        {
+            lua.set_nil();
+            lua.set_string(error);
+            return 2;
+        }
+
+        auto [handle, backend_error] = active_mod->backend_.open_target(*session, std::move(component_path));
+        if (handle == 0)
+        {
+            lua.set_nil();
+            lua.set_string(backend_error);
+            return 2;
+        }
+        lua.set_integer(static_cast<int64_t>(handle));
+        return 1;
+    }
+
+    static int close_input_component(const Lua& lua)
+    {
+        auto* session = active_mod ? active_mod->session_for(lua) : nullptr;
+        const auto handle = static_cast<uint64_t>(lua.get_integer(1));
+        lua.set_bool(session && active_mod->backend_.close_target(*session, handle));
+        return 1;
     }
 
     static int bind_action(const Lua& lua)
@@ -235,43 +326,21 @@ private:
             lua.set_string("Lua session is not registered");
             return 2;
         }
-        if (!lua.is_function(packed_action_callback_index))
+        if (!lua.is_function(bind_callback_index))
         {
             lua.set_nil();
             lua.set_string("callback must be a function");
             return 2;
         }
 
-        // LuaMadeSimple::Lua::get_integer removes the consumed stack slot.
-        // Therefore decode the packed arguments from the front of the stack;
-        // every subsequent argument shifts into index 1 after each read.
-        const auto action_length = lua.get_integer(1);
-        if (action_length <= 0 || action_length > packed_action_max_length)
+        const auto target = static_cast<uint64_t>(lua.get_integer(1));
+        std::string action_path;
+        std::string error;
+        if (!decode_packed_path(lua, action_path, error))
         {
             lua.set_nil();
-            lua.set_string("invalid encoded action path length");
+            lua.set_string(error);
             return 2;
-        }
-
-        std::array<uint64_t, packed_action_word_count> words{};
-        for (int32_t index = 0; index < packed_action_word_count; ++index)
-        {
-            words[static_cast<std::size_t>(index)] = static_cast<uint64_t>(lua.get_integer(1));
-        }
-
-        std::string action_path(static_cast<std::size_t>(action_length), '\0');
-        for (int64_t index = 0; index < action_length; ++index)
-        {
-            const auto word = words[static_cast<std::size_t>(index / 8)];
-            const auto shift = static_cast<uint32_t>((index % 8) * 8);
-            const auto byte = static_cast<uint8_t>((word >> shift) & 0xFFu);
-            if (byte == 0)
-            {
-                lua.set_nil();
-                lua.set_string("invalid encoded action path byte");
-                return 2;
-            }
-            action_path[static_cast<std::size_t>(index)] = static_cast<char>(byte);
         }
 
         const auto [phase, phase_view] = parse_phase(lua.get_integer(1));
@@ -283,15 +352,15 @@ private:
         }
         const std::string phase_name(phase_view);
 
-        // The callback is now the sole remaining stack argument, so make_ref()
-        // stores exactly that function in the registry.
+        // After consuming target, packed path and phase, the callback is the
+        // sole remaining stack argument.
         const int32_t callback_ref = lua.registry().make_ref();
-        const uint64_t handle = active_mod->backend_.subscribe(
-            *session, callback_ref, std::move(action_path), phase_name, phase);
+        auto [handle, backend_error] = active_mod->backend_.subscribe(
+            *session, target, callback_ref, std::move(action_path), phase_name, phase);
         if (handle == 0)
         {
             lua.set_nil();
-            lua.set_string("Enhanced Input subscription creation failed");
+            lua.set_string(backend_error);
             return 2;
         }
         lua.set_integer(static_cast<int64_t>(handle));
