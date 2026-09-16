@@ -1,0 +1,8 @@
+#pragma once
+
+namespace UE4SSLuaEventBridge
+{
+inline constexpr char embedded_lua_api[] = R"UE4SSLEB_LUA(
+@UE4SSLEB_LUA_API@
+)UE4SSLEB_LUA";
+}

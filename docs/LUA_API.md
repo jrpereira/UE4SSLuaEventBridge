@@ -16,19 +16,53 @@ local version = bridge.GetVersion()
 local capabilities = bridge.GetCapabilities()
 ```
 
-Version 0.2.11 reports API version 2:
+Version 0.3.0 reports API version 3:
 
 ```lua
 {
-    api = 2,
+    api = 3,
     enhanced_input = true,
     explicit_target = true,
+    helpers = true,
+    dynamic_input = true,
+    trigger_tap = true,
+    trigger_hold = true,
     target_ue4ss_commit = "97b7e501",
 }
 ```
 
 Capabilities are authoritative. Consumers should not infer support from the
 bridge version.
+
+## Open generated input
+
+The helper API binds physical Unreal key names without requiring a content
+asset path for an Input Action:
+
+```lua
+local Helpers = bridge.Helpers
+local Trigger = Helpers.Trigger
+
+local input, err = Helpers.OpenInput({
+    component_path = componentPath,
+    subsystem_path = subsystemPath,
+})
+
+local tapHandle, tapError = input:Bind("F10", Trigger.Tap, onTap)
+local holdHandle, holdError = input:Bind("F10", Trigger.Hold, onHold, {
+    threshold_seconds = 0.5,
+    one_shot = true,
+})
+
+input:Unbind(tapHandle)
+input:Close()
+```
+
+Both paths must identify exact live objects. The helper creates a private
+transient mapping context, Boolean Input Action, and Tap or Hold trigger for
+each binding. Enhanced Input performs trigger classification. See
+[`DEVELOPER_API.md`](DEVELOPER_API.md) for options, payload additions, failure
+rollback, and lifecycle rules.
 
 ## Open an explicit input component
 
@@ -87,11 +121,12 @@ Axis1D `1`, Axis2D `2`, and Axis3D `3`.
 
 ## Thread requirement
 
-`OpenInputComponent`, `BindAction`, `Unbind`, `CloseInputComponent`, and
-`UnbindAll` must run on the Unreal game thread because they resolve or mutate
-live Unreal objects. Calls from other threads fail without touching the native
-binding array. UE4SS `ExecuteInGameThread` child Lua states are supported and
-retain the owning Lua session ID.
+`OpenInputComponent`, `BindAction`, `Unbind`, `CloseInputComponent`,
+`UnbindAll`, `Helpers.OpenInput`, and all input-scope methods must run on the
+Unreal game thread because they resolve or mutate live Unreal objects. Calls
+from other threads fail without touching the native binding array. UE4SS
+`ExecuteInGameThread` child Lua states are supported and retain the owning Lua
+session ID.
 
 Callbacks are not invoked inside Unreal's input-dispatch stack. Native events
 are queued and delivered from the bridge's UE4SS update callback.
