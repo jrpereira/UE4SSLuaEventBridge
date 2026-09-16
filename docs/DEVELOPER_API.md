@@ -1,6 +1,6 @@
 # Developer API: primitives and helpers
 
-UE4SSLuaEventBridge 0.3.0 exposes two API layers:
+UE4SSLuaEventBridge 0.3.1 exposes two API layers:
 
 | Layer | Use it when | Ownership |
 |---|---|---|
@@ -13,7 +13,7 @@ component, or subsystem.
 
 ## Requirements and execution model
 
-Version 0.3.0 targets:
+Version 0.3.1 targets:
 
 - UE4SS 3.0.1 Beta #0 at commit `97b7e501`;
 - Unreal Engine 5.5; and
@@ -27,6 +27,10 @@ ExecuteInGameThread(function()
     -- Open, bind, unbind, and close here.
 end)
 ```
+
+Every helper entry point checks the native UE4SS game-thread state before it
+constructs, configures, registers, or removes an Unreal object. An off-thread
+call returns an error without partially changing the input scope.
 
 Native input execution never enters Lua. It copies event data into a queue,
 and the bridge dispatches Lua callbacks later from its UE4SS update callback.
@@ -44,7 +48,7 @@ local version = UE4SSLuaEventBridge.GetVersion()
 local capabilities = UE4SSLuaEventBridge.GetCapabilities()
 ```
 
-Version 0.3.0 reports:
+Version 0.3.1 reports:
 
 ```lua
 {

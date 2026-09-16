@@ -99,7 +99,7 @@ public:
     UE4SSLuaEventBridgeMod()
     {
         ModName = L"UE4SSLuaEventBridge";
-        ModVersion = L"0.3.0";
+        ModVersion = L"0.3.1";
         ModDescription = L"Game-agnostic native Enhanced Input callbacks for UE4SS Lua mods";
         ModAuthors = L"UE4SS Lua Event Bridge contributors";
         ModIntendedSDKVersion = L"3.0.1-97b7e501";
@@ -162,6 +162,7 @@ public:
 
         lua.register_function("UE4SSLuaEventBridge_GetVersion", &get_version);
         lua.register_function("UE4SSLuaEventBridge_GetCapabilities", &get_capabilities);
+        lua.register_function("UE4SSLuaEventBridge_IsInGameThread", &is_in_game_thread);
         lua.register_function("UE4SSLuaEventBridge_OpenInputComponent", &open_input_component);
         lua.register_function("UE4SSLuaEventBridge_CloseInputComponent", &close_input_component);
         lua.register_function("UE4SSLuaEventBridge_BindAction", &bind_action);
@@ -255,7 +256,7 @@ public:
 private:
     static int get_version(const Lua& lua)
     {
-        lua.set_string("0.3.0");
+        lua.set_string("0.3.1");
         return 1;
     }
 
@@ -270,6 +271,12 @@ private:
         lua.set_bool(true);
         lua.set_string("97b7e501");
         return 8;
+    }
+
+    static int is_in_game_thread(const Lua& lua)
+    {
+        lua.set_bool(RC::Unreal::IsInGameThread());
+        return 1;
     }
 
     static std::pair<TriggerEvent, std::string_view> parse_phase(int64_t phase)
