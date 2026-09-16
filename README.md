@@ -3,7 +3,7 @@
 `UE4SSLuaEventBridge` is a native UE4SS C++ mod that exposes native Unreal
 Enhanced Input action events to Lua through a small, explicit-target API.
 
-Version 0.3.1 targets UE4SS `3.0.1 Beta #0` at commit `97b7e501` and Unreal
+Version 0.3.2 targets UE4SS `3.0.1 Beta #0` at commit `97b7e501` and Unreal
 Engine 5.5 on Windows x64. The C++ and Unreal layouts are ABI-pinned; a build
 for a nearby UE4SS or engine revision is not assumed compatible.
 
@@ -75,6 +75,9 @@ hooking, background scans, polling, or game-specific state filtering.
   Unreal still owns a binding or clone, preventing a dangling native vtable.
 - Handles are isolated by Lua session, including calls made from UE4SS
   `ExecuteInGameThread` child Lua states.
+- Session and child-state alias indexes are synchronized; stopped sessions
+  remain inert until bridge destruction so in-flight raw references cannot
+  outlive their storage.
 
 ## Installation layout
 
