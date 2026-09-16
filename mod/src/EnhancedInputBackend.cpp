@@ -5,21 +5,18 @@
 #include <algorithm>
 #include <cstring>
 #include <new>
-#include <stdexcept>
 #include <utility>
 
 namespace UE4SSLuaEventBridge
 {
 namespace ABI = EnhancedInputABI;
 using RC::Unreal::FMemory;
+using RC::Unreal::FWeakObjectPtr;
 using RC::Unreal::UClass;
 using RC::Unreal::UObject;
-using RC::Unreal::UObjectBase;
 
 namespace
 {
-EnhancedInputBackend* active_backend{};
-
 template <typename T>
 T read_at(const ABI::InputActionInstanceView& view, std::size_t offset)
 {
@@ -39,22 +36,6 @@ UClass* object_class(UObject* object)
     std::memcpy(&result, reinterpret_cast<std::byte*>(object) + 0x10, sizeof(result));
     return result;
 }
-
-UObject* object_property(UObject* object, const wchar_t* name)
-{
-    if (!object)
-    {
-        return nullptr;
-    }
-    auto* storage = object->GetValuePtrByPropertyNameInChain(name);
-    if (!storage)
-    {
-        return nullptr;
-    }
-    UObject* result{};
-    std::memcpy(&result, storage, sizeof(result));
-    return result;
-}
 }
 
 UObject* ABI::InputActionInstanceView::source_action() const { return read_at<UObject*>(*this, 0x00); }
@@ -71,13 +52,6 @@ ABI::ActionEventBinding::ActionEventBinding(const UObject* source_action, ABI::T
 {
     handle = binding_handle;
 }
-
-struct EnhancedInputBackend::LiveBinding
-{
-    UObject* component{};
-    NativeBinding* binding{};
-    uint64_t subscription{};
-};
 
 class EnhancedInputBackend::NativeBinding final : public ABI::ActionEventBinding
 {
@@ -123,47 +97,19 @@ private:
     std::shared_ptr<EnhancedInputSubscription> owner_;
 };
 
-class EnhancedInputBackend::CreateListener final : public RC::Unreal::FUObjectCreateListener
-{
-public:
-    explicit CreateListener(EnhancedInputBackend& backend) : backend_(&backend) {}
-    void NotifyUObjectCreated(const UObjectBase* object, int32_t) override { backend_->note_object_created(object); }
-    void OnUObjectArrayShutdown() override {}
-
-private:
-    EnhancedInputBackend* backend_;
-};
-
-class EnhancedInputBackend::DeleteListener final : public RC::Unreal::FUObjectDeleteListener
-{
-public:
-    explicit DeleteListener(EnhancedInputBackend& backend) : backend_(&backend) {}
-    void NotifyUObjectDeleted(const UObjectBase* object, int32_t) override { backend_->note_object_deleted(object); }
-    void OnUObjectArrayShutdown() override {}
-
-private:
-    EnhancedInputBackend* backend_;
-};
-
 EnhancedInputBackend::EnhancedInputBackend() = default;
-
 EnhancedInputBackend::~EnhancedInputBackend() { shutdown(); }
+
+void EnhancedInputBackend::initialize()
+{
+    initialized_.store(true, std::memory_order_release);
+}
 
 void EnhancedInputBackend::shutdown()
 {
     if (!initialized_.exchange(false))
     {
         return;
-    }
-
-    active_backend = nullptr;
-    if (create_listener_)
-    {
-        RC::Unreal::FUObjectArray::RemoveUObjectCreateListener(create_listener_.get());
-    }
-    if (delete_listener_)
-    {
-        RC::Unreal::FUObjectArray::RemoveUObjectDeleteListener(delete_listener_.get());
     }
 
     std::scoped_lock lock(mutex_);
@@ -177,100 +123,225 @@ void EnhancedInputBackend::shutdown()
     }
     bindings_.clear();
     subscriptions_.clear();
+    targets_.clear();
     events_.clear();
 }
 
-void EnhancedInputBackend::initialize()
+UObject* EnhancedInputBackend::resolve_component(const std::wstring& path) const
 {
-    if (initialized_.exchange(true))
-    {
-        return;
-    }
-
-    active_backend = this;
-    create_listener_ = std::make_unique<CreateListener>(*this);
-    delete_listener_ = std::make_unique<DeleteListener>(*this);
-    RC::Unreal::FUObjectArray::AddUObjectCreateListener(create_listener_.get());
-    RC::Unreal::FUObjectArray::AddUObjectDeleteListener(delete_listener_.get());
-    RC::Unreal::Hook::RegisterProcessEventPostCallback([](UObject*, RC::Unreal::UFunction*, void*) {
-        auto* backend = active_backend;
-        if (!backend || !backend->work_pending_.load(std::memory_order_acquire))
+    const auto find_exact = [&](const wchar_t* class_name) -> UObject* {
+        std::vector<UObject*> objects;
+        RC::Unreal::UObjectGlobals::FindAllOf(class_name, objects);
+        for (auto* object : objects)
         {
-            return;
-        }
-
-        // UE4SS installs ProcessEvent hooks before UGameEngine::Tick records
-        // the game-thread id. IsInGameThread() throws during that window. Do
-        // not let the exception escape: UE4SS removes callbacks that throw.
-        // Keeping work_pending_ set makes a later ProcessEvent retry once the
-        // engine has completed thread initialization.
-        try
-        {
-            if (RC::Unreal::IsInGameThread())
+            if (object && object->GetPathName() == path && validate_component(object))
             {
-                backend->process_game_thread_work();
+                return object;
             }
         }
-        catch (...)
-        {
-            return;
-        }
-    });
+        return nullptr;
+    };
+
+    if (auto* component = find_exact(L"EnhancedInputComponent"))
+    {
+        return component;
+    }
+    return find_exact(L"InputComponent");
 }
 
-uint64_t EnhancedInputBackend::subscribe(
+UObject* EnhancedInputBackend::resolve_action(const std::wstring& path) const
+{
+    std::vector<UObject*> actions;
+    RC::Unreal::UObjectGlobals::FindAllOf(L"InputAction", actions);
+    for (auto* action : actions)
+    {
+        if (action && action->GetPathName() == path)
+        {
+            return action;
+        }
+    }
+    return nullptr;
+}
+
+bool EnhancedInputBackend::validate_component(UObject* component) const
+{
+    if (!component)
+    {
+        return false;
+    }
+    auto* component_type = object_class(component);
+    if (!component_type || component_type->GetPropertiesSize() != static_cast<int32_t>(ABI::enhanced_input_component_size))
+    {
+        return false;
+    }
+    const auto* bindings = reinterpret_cast<const ABI::ActionEventBindingArray*>(
+        reinterpret_cast<const std::byte*>(component) + ABI::action_event_bindings_offset);
+    return bindings->size >= 0 && bindings->capacity >= bindings->size && bindings->capacity < 65536 &&
+           (bindings->capacity == 0 || bindings->data != nullptr);
+}
+
+std::pair<uint64_t, std::string> EnhancedInputBackend::open_target(LuaSession& session, std::string component_path)
+{
+    if (!initialized_.load(std::memory_order_acquire))
+    {
+        return {0, "Enhanced Input backend is not initialized"};
+    }
+
+    auto* component = resolve_component(widen_ascii(component_path));
+    if (!component)
+    {
+        return {0, "EnhancedInputComponent was not found at the supplied object path"};
+    }
+
+    Target target{};
+    target.id = next_target_.fetch_add(1);
+    target.session = &session;
+    target.component.assign(component);
+    target.component_path_utf8 = std::move(component_path);
+
+    const auto id = target.id;
+    std::scoped_lock lock(mutex_);
+    targets_.emplace(id, std::move(target));
+    return {id, {}};
+}
+
+bool EnhancedInputBackend::close_target(LuaSession& session, uint64_t target)
+{
+    std::scoped_lock lock(mutex_);
+    const auto found = targets_.find(target);
+    if (found == targets_.end() || found->second.session != &session)
+    {
+        return false;
+    }
+
+    std::vector<uint64_t> subscriptions;
+    for (const auto& [id, subscription] : subscriptions_)
+    {
+        if (subscription->session == &session && subscription->target == target)
+        {
+            subscriptions.push_back(id);
+        }
+    }
+    for (const auto id : subscriptions)
+    {
+        unsubscribe_locked(session, id);
+    }
+    targets_.erase(found);
+    return true;
+}
+
+std::pair<uint64_t, std::string> EnhancedInputBackend::subscribe(
     LuaSession& session,
+    uint64_t target_id,
     int32_t callback_ref,
     std::string action_path,
     std::string phase_name,
     ABI::TriggerEvent phase)
 {
+    std::scoped_lock lock(mutex_);
+
+    const auto target_it = targets_.find(target_id);
+    if (target_it == targets_.end() || target_it->second.session != &session)
+    {
+        return {0, "invalid Enhanced Input target handle"};
+    }
+
+    auto* component = target_it->second.component.Get();
+    if (!validate_component(component))
+    {
+        return {0, "Enhanced Input target is no longer valid"};
+    }
+
+    auto* action = resolve_action(widen_ascii(action_path));
+    if (!action)
+    {
+        return {0, "InputAction was not found at the supplied object path"};
+    }
+
     auto subscription = std::make_shared<EnhancedInputSubscription>();
     subscription->id = next_subscription_.fetch_add(1);
+    subscription->target = target_id;
     subscription->session = &session;
     subscription->callback_ref = callback_ref;
-    subscription->action_path = widen_ascii(action_path);
     subscription->action_path_utf8 = std::move(action_path);
     subscription->phase_name = std::move(phase_name);
     subscription->phase = phase;
 
+    auto* binding = attach(component, action, subscription);
+    if (!binding)
     {
-        std::scoped_lock lock(mutex_);
-        subscriptions_.emplace(subscription->id, subscription);
+        return {0, "Enhanced Input native binding creation failed"};
     }
-    work_pending_.store(true, std::memory_order_release);
-    return subscription->id;
+
+    const auto id = subscription->id;
+    subscriptions_.emplace(id, subscription);
+    LiveBinding live{};
+    live.component.assign(component);
+    live.binding = binding;
+    live.subscription = id;
+    bindings_.push_back(std::move(live));
+    return {id, {}};
 }
 
-bool EnhancedInputBackend::unsubscribe(LuaSession& session, uint64_t id)
+bool EnhancedInputBackend::unsubscribe_locked(LuaSession& session, uint64_t id)
 {
-    std::scoped_lock lock(mutex_);
     const auto it = subscriptions_.find(id);
     if (it == subscriptions_.end() || it->second->session != &session)
     {
         return false;
     }
+
     it->second->active.store(false, std::memory_order_release);
-    work_pending_.store(true, std::memory_order_release);
+    for (auto binding_it = bindings_.begin(); binding_it != bindings_.end();)
+    {
+        if (binding_it->subscription == id)
+        {
+            detach(*binding_it);
+            binding_it = bindings_.erase(binding_it);
+        }
+        else
+        {
+            ++binding_it;
+        }
+    }
+    subscriptions_.erase(it);
     return true;
+}
+
+bool EnhancedInputBackend::unsubscribe(LuaSession& session, uint64_t id)
+{
+    std::scoped_lock lock(mutex_);
+    return unsubscribe_locked(session, id);
 }
 
 std::size_t EnhancedInputBackend::unsubscribe_all(LuaSession& session)
 {
-    std::size_t count{};
     std::scoped_lock lock(mutex_);
-    for (auto& [id, subscription] : subscriptions_)
+    std::vector<uint64_t> ids;
+    for (const auto& [id, subscription] : subscriptions_)
     {
-        if (subscription->session == &session && subscription->active.exchange(false))
+        if (subscription->session == &session)
         {
-            ++count;
+            ids.push_back(id);
         }
     }
-    if (count)
+    for (const auto id : ids)
     {
-        work_pending_.store(true, std::memory_order_release);
+        unsubscribe_locked(session, id);
     }
-    return count;
+
+    for (auto it = targets_.begin(); it != targets_.end();)
+    {
+        if (it->second.session == &session)
+        {
+            it = targets_.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+    return ids.size();
 }
 
 std::vector<EnhancedInputEvent> EnhancedInputBackend::take_events()
@@ -297,122 +368,6 @@ void EnhancedInputBackend::enqueue(
 
     std::scoped_lock lock(mutex_);
     events_.push_back(std::move(event));
-}
-
-void EnhancedInputBackend::note_object_created(const UObjectBase* object)
-{
-    if (!object || !initialized_.load(std::memory_order_acquire))
-    {
-        return;
-    }
-
-    // UObject creation is extremely frequent during normal UI interaction.
-    // Only schedule another expensive discovery pass while at least one active
-    // subscription is still missing a native binding. Once all subscriptions
-    // are attached this listener reduces to the checks below and no longer
-    // drives FindAllOf(PlayerController/InputAction) on every constructed object.
-    bool needs_discovery{};
-    {
-        std::scoped_lock lock(mutex_);
-        needs_discovery = std::any_of(subscriptions_.begin(), subscriptions_.end(), [&](const auto& entry) {
-            const auto& subscription = entry.second;
-            if (!subscription->active.load(std::memory_order_acquire))
-            {
-                return false;
-            }
-            return std::none_of(bindings_.begin(), bindings_.end(), [&](const LiveBinding& live) {
-                return live.subscription == subscription->id;
-            });
-        });
-    }
-
-    if (needs_discovery)
-    {
-        work_pending_.store(true, std::memory_order_release);
-    }
-}
-
-void EnhancedInputBackend::note_object_deleted(const UObjectBase* object)
-{
-    bool lost_binding{};
-    {
-        std::scoped_lock lock(mutex_);
-        const auto* deleted = reinterpret_cast<const UObject*>(object);
-        const auto previous_size = bindings_.size();
-        bindings_.erase(
-            std::remove_if(bindings_.begin(), bindings_.end(), [deleted](const LiveBinding& live) {
-                return live.component == deleted;
-            }),
-            bindings_.end());
-        lost_binding = bindings_.size() != previous_size;
-    }
-
-    // A destroyed EnhancedInputComponent means the local player/input stack is
-    // being rebuilt. Re-arm discovery so the subscriptions follow the new component.
-    if (lost_binding)
-    {
-        work_pending_.store(true, std::memory_order_release);
-    }
-}
-
-UObject* EnhancedInputBackend::resolve_action(const std::wstring& path) const
-{
-    std::vector<UObject*> actions;
-    RC::Unreal::UObjectGlobals::FindAllOf(L"InputAction", actions);
-    for (auto* action : actions)
-    {
-        if (action && action->GetPathName() == path)
-        {
-            return action;
-        }
-    }
-    return nullptr;
-}
-
-std::vector<UObject*> EnhancedInputBackend::resolve_local_player_components() const
-{
-    std::vector<UObject*> controllers;
-    RC::Unreal::UObjectGlobals::FindAllOf(L"PlayerController", controllers);
-
-    for (auto* controller : controllers)
-    {
-        auto* pawn = object_property(controller, L"AcknowledgedPawn");
-        if (!pawn)
-        {
-            pawn = object_property(controller, L"Pawn");
-        }
-
-        auto* component = object_property(pawn, L"InputComponent");
-        if (validate_component(component))
-        {
-            return {component};
-        }
-
-        component = object_property(controller, L"InputComponent");
-        if (validate_component(component))
-        {
-            return {component};
-        }
-    }
-
-    return {};
-}
-
-bool EnhancedInputBackend::validate_component(UObject* component) const
-{
-    if (!component)
-    {
-        return false;
-    }
-    auto* component_type = object_class(component);
-    if (!component_type || component_type->GetPropertiesSize() != static_cast<int32_t>(ABI::enhanced_input_component_size))
-    {
-        return false;
-    }
-    const auto* bindings = reinterpret_cast<const ABI::ActionEventBindingArray*>(
-        reinterpret_cast<const std::byte*>(component) + ABI::action_event_bindings_offset);
-    return bindings->size >= 0 && bindings->capacity >= bindings->size && bindings->capacity < 65536 &&
-           (bindings->capacity == 0 || bindings->data != nullptr);
 }
 
 EnhancedInputBackend::NativeBinding* EnhancedInputBackend::attach(
@@ -456,12 +411,16 @@ EnhancedInputBackend::NativeBinding* EnhancedInputBackend::attach(
 
 void EnhancedInputBackend::detach(LiveBinding& live)
 {
-    if (!validate_component(live.component))
+    auto* component = live.component.Get();
+    if (!validate_component(component))
     {
+        // If the owning component has already been destroyed, Unreal has also
+        // destroyed the binding array. Do not dereference the stale binding.
         return;
     }
+
     auto* array = reinterpret_cast<ABI::ActionEventBindingArray*>(
-        reinterpret_cast<std::byte*>(live.component) + ABI::action_event_bindings_offset);
+        reinterpret_cast<std::byte*>(component) + ABI::action_event_bindings_offset);
     for (int32_t index = 0; index < array->size; ++index)
     {
         if (array->data[index] != live.binding)
@@ -475,78 +434,6 @@ void EnhancedInputBackend::detach(LiveBinding& live)
         --array->size;
         delete live.binding;
         return;
-    }
-}
-
-void EnhancedInputBackend::process_game_thread_work()
-{
-    work_pending_.store(false, std::memory_order_release);
-
-    const auto components = resolve_local_player_components();
-
-    std::scoped_lock lock(mutex_);
-
-    for (auto it = bindings_.begin(); it != bindings_.end();)
-    {
-        const auto owner = subscriptions_.find(it->subscription);
-        if (owner == subscriptions_.end() || !owner->second->active.load(std::memory_order_acquire))
-        {
-            detach(*it);
-            it = bindings_.erase(it);
-        }
-        else
-        {
-            ++it;
-        }
-    }
-
-    for (auto it = subscriptions_.begin(); it != subscriptions_.end();)
-    {
-        const auto& subscription = it->second;
-        if (!subscription->active.load(std::memory_order_acquire))
-        {
-            it = subscriptions_.erase(it);
-            continue;
-        }
-
-        if (components.empty())
-        {
-            ++it;
-            continue;
-        }
-
-        const bool fully_bound = std::all_of(components.begin(), components.end(), [&](UObject* component) {
-            return std::any_of(bindings_.begin(), bindings_.end(), [&](const LiveBinding& live) {
-                return live.component == component && live.subscription == subscription->id;
-            });
-        });
-        if (fully_bound)
-        {
-            ++it;
-            continue;
-        }
-
-        UObject* action = resolve_action(subscription->action_path);
-        if (!action)
-        {
-            ++it;
-            continue;
-        }
-
-        for (auto* component : components)
-        {
-            const bool already_bound = std::any_of(bindings_.begin(), bindings_.end(), [&](const LiveBinding& live) {
-                return live.component == component && live.subscription == subscription->id;
-            });
-            if (!already_bound)
-            {
-                if (auto* binding = attach(component, action, subscription))
-                {
-                    bindings_.push_back({component, binding, subscription->id});
-                }
-            }
-        }
-        ++it;
     }
 }
 }
