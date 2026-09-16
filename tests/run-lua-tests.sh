@@ -14,4 +14,3 @@ else
     echo "Lua 5.4 interpreter not found" >&2
     exit 1
 fi
-
