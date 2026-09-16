@@ -27,6 +27,21 @@ build\dist\UE4SSLuaEventBridge\dlls\main.dll
 Do not distribute a binary built from a different UE4SS experimental commit
 without explicitly validating that its C++ ABI matches `97b7e501`.
 
+## Tagged releases
+
+Pushing a `vMAJOR.MINOR.PATCH` tag runs the full portable checks, verifies that
+the tag matches the version declared in `CMakeLists.txt`, builds the Windows DLL
+with MSVC, and publishes a permanent GitHub release containing the installable
+ZIP and its SHA-256 checksum.
+
+Add `.github/release-notes/vMAJOR.MINOR.PATCH.md` before tagging to supply a
+curated changelog. If that file is absent, GitHub-generated notes are used.
+
+```sh
+git tag -a v0.3.2 -m "UE4SSLuaEventBridge v0.3.2"
+git push origin v0.3.2
+```
+
 ## Portable checks
 
 On Linux, the behavioral tests and ABI-facing syntax audit can be run without
