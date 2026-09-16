@@ -29,17 +29,21 @@ without explicitly validating that its C++ ABI matches `97b7e501`.
 
 ## Tagged releases
 
-Pushing a `vMAJOR.MINOR.PATCH` tag runs the full portable checks, verifies that
-the tag matches the version declared in `CMakeLists.txt`, builds the Windows DLL
-with MSVC, and publishes a permanent GitHub release containing the installable
-ZIP and its SHA-256 checksum.
+Creating a `release/vMAJOR.MINOR.PATCH` branch from the intended release commit
+runs the full portable checks, verifies that the branch matches the version
+declared in `CMakeLists.txt`, and builds the Windows DLL with MSVC. After those
+steps pass, the workflow creates the matching `vMAJOR.MINOR.PATCH` tag and a
+permanent GitHub release containing the installable ZIP and its SHA-256
+checksum.
 
 Add `.github/release-notes/vMAJOR.MINOR.PATCH.md` before tagging to supply a
 curated changelog. If that file is absent, GitHub-generated notes are used.
 
 ```sh
-git tag -a v0.3.2 -m "UE4SSLuaEventBridge v0.3.2"
-git push origin v0.3.2
+git switch main
+git pull --ff-only
+git switch -c release/v0.3.2
+git push origin release/v0.3.2
 ```
 
 ## Portable checks

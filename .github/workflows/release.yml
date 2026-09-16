@@ -2,8 +2,8 @@ name: release
 
 on:
   push:
-    tags:
-      - "v*.*.*"
+    branches:
+      - "release/v*.*.*"
 
 jobs:
   portable-tests:
@@ -28,16 +28,18 @@ jobs:
       - name: Validate release version
         shell: pwsh
         run: |
-          if ($env:GITHUB_REF_NAME -notmatch '^v([0-9]+\.[0-9]+\.[0-9]+)$') {
-              throw "Release tag must use vMAJOR.MINOR.PATCH"
+          if ($env:GITHUB_REF_NAME -notmatch '^release/v([0-9]+\.[0-9]+\.[0-9]+)$') {
+              throw "Release branch must use release/vMAJOR.MINOR.PATCH"
           }
           $version = $Matches[1]
+          $tag = "v$version"
           $cmake = Get-Content CMakeLists.txt -Raw
           $declaration = "project(UE4SSLuaEventBridge VERSION $version LANGUAGES CXX)"
           if (-not $cmake.Contains($declaration)) {
-              throw "Tag $env:GITHUB_REF_NAME does not match the CMake project version"
+              throw "Branch $env:GITHUB_REF_NAME does not match the CMake project version"
           }
           "RELEASE_VERSION=$version" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "RELEASE_TAG=$tag" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DUE4SSLEB_BUILD_TESTS=OFF
       - name: Build
@@ -55,13 +57,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $notes = ".github/release-notes/$env:GITHUB_REF_NAME.md"
+          $notes = ".github/release-notes/$env:RELEASE_TAG.md"
           $arguments = @(
-              "release", "create", $env:GITHUB_REF_NAME,
+              "release", "create", $env:RELEASE_TAG,
               $env:RELEASE_ARCHIVE,
               "$($env:RELEASE_ARCHIVE).sha256",
-              "--verify-tag",
-              "--title", "UE4SSLuaEventBridge $env:GITHUB_REF_NAME"
+              "--target", $env:GITHUB_SHA,
+              "--title", "UE4SSLuaEventBridge $env:RELEASE_TAG"
           )
           if (Test-Path $notes) {
               $arguments += @("--notes-file", $notes)
