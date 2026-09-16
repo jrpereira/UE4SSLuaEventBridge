@@ -33,19 +33,37 @@ std::wstring widen_ascii(const std::string& value)
 UClass* object_class(UObject* object)
 {
     UClass* result{};
-    std::memcpy(&result, reinterpret_cast<std::byte*>(object) + 0x10, sizeof(result));
+    std::memcpy(
+        &result,
+        reinterpret_cast<std::byte*>(object) + ABI::uobject_class_offset,
+        sizeof(result));
     return result;
 }
 }
 
-UObject* ABI::InputActionInstanceView::source_action() const { return read_at<UObject*>(*this, 0x00); }
-ABI::TriggerEvent ABI::InputActionInstanceView::trigger_event() const { return read_at<TriggerEvent>(*this, 0x13); }
-double ABI::InputActionInstanceView::x() const { return read_at<double>(*this, 0x38); }
-double ABI::InputActionInstanceView::y() const { return read_at<double>(*this, 0x40); }
-double ABI::InputActionInstanceView::z() const { return read_at<double>(*this, 0x48); }
-ABI::ValueType ABI::InputActionInstanceView::value_type() const { return read_at<ValueType>(*this, 0x50); }
-float ABI::InputActionInstanceView::elapsed_processed() const { return read_at<float>(*this, 0x58); }
-float ABI::InputActionInstanceView::elapsed_triggered() const { return read_at<float>(*this, 0x5C); }
+UObject* ABI::InputActionInstanceView::source_action() const
+{
+    return read_at<UObject*>(*this, instance_source_action_offset);
+}
+ABI::TriggerEvent ABI::InputActionInstanceView::trigger_event() const
+{
+    return read_at<TriggerEvent>(*this, instance_trigger_event_offset);
+}
+double ABI::InputActionInstanceView::x() const { return read_at<double>(*this, instance_value_x_offset); }
+double ABI::InputActionInstanceView::y() const { return read_at<double>(*this, instance_value_y_offset); }
+double ABI::InputActionInstanceView::z() const { return read_at<double>(*this, instance_value_z_offset); }
+ABI::ValueType ABI::InputActionInstanceView::value_type() const
+{
+    return read_at<ValueType>(*this, instance_value_type_offset);
+}
+float ABI::InputActionInstanceView::elapsed_processed() const
+{
+    return read_at<float>(*this, instance_elapsed_processed_offset);
+}
+float ABI::InputActionInstanceView::elapsed_triggered() const
+{
+    return read_at<float>(*this, instance_elapsed_triggered_offset);
+}
 
 ABI::ActionEventBinding::ActionEventBinding(const UObject* source_action, ABI::TriggerEvent trigger, uint32_t binding_handle)
     : action(source_action), event(trigger)
@@ -57,20 +75,55 @@ class EnhancedInputBackend::NativeBinding final : public ABI::ActionEventBinding
 {
 public:
     NativeBinding(
-        EnhancedInputBackend& backend,
+        std::shared_ptr<EnhancedInputDispatchState> dispatch_state,
         const UObject* action,
         ABI::TriggerEvent event,
         uint32_t handle,
         std::shared_ptr<EnhancedInputSubscription> owner)
-        : ActionEventBinding(action, event, handle), backend_(&backend), owner_(std::move(owner))
+        : ActionEventBinding(action, event, handle),
+          dispatch_state_(std::move(dispatch_state)),
+          owner_(std::move(owner))
     {
+        dispatch_state_->live_bindings.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    ~NativeBinding() override
+    {
+        dispatch_state_->live_bindings.fetch_sub(1, std::memory_order_release);
     }
 
     void Execute(const ABI::InputActionInstanceView& instance) const override
     {
-        if (owner_->active.load(std::memory_order_acquire))
+        if (!owner_->active.load(std::memory_order_acquire) ||
+            !dispatch_state_->accepting.load(std::memory_order_acquire))
         {
-            backend_->enqueue(owner_, instance);
+            return;
+        }
+
+        try
+        {
+            EnhancedInputEvent queued{};
+            queued.subscription = owner_->id;
+            queued.owner = owner_;
+            queued.elapsed_processed = instance.elapsed_processed();
+            queued.elapsed_triggered = instance.elapsed_triggered();
+            queued.x = instance.x();
+            queued.y = instance.y();
+            queued.z = instance.z();
+            queued.value_type = instance.value_type();
+
+            std::scoped_lock lock(dispatch_state_->mutex);
+            if (owner_->active.load(std::memory_order_acquire) &&
+                dispatch_state_->accepting.load(std::memory_order_acquire))
+            {
+                dispatch_state_->events.push_back(std::move(queued));
+            }
+        }
+        catch (...)
+        {
+            // Never unwind through Unreal's input dispatcher. An allocation
+            // failure disables this subscription until game-thread cleanup.
+            owner_->active.store(false, std::memory_order_release);
         }
     }
 
@@ -80,51 +133,76 @@ public:
 
     ABI::UniquePtr<ABI::ActionEventBinding> Clone() const override
     {
+        // A clone is owned exclusively by Unreal and cannot be found through
+        // the bridge's original component/binding pair. Remember that one has
+        // existed so an off-thread DLL unload can conservatively retain code.
+        dispatch_state_->clone_created.store(true, std::memory_order_release);
         void* memory = FMemory::Malloc(sizeof(NativeBinding), alignof(NativeBinding));
         if (!memory)
         {
             return {};
         }
         return ABI::UniquePtr<ABI::ActionEventBinding>(
-            ::new (memory) NativeBinding(*backend_, action.Get(), event, handle, owner_));
+            ::new (memory) NativeBinding(dispatch_state_, action.Get(), event, handle, owner_));
     }
 
     static void operator delete(void* memory) noexcept { FMemory::Free(memory); }
     static void operator delete(void* memory, std::size_t) noexcept { FMemory::Free(memory); }
 
 private:
-    EnhancedInputBackend* backend_{};
+    std::shared_ptr<EnhancedInputDispatchState> dispatch_state_;
     std::shared_ptr<EnhancedInputSubscription> owner_;
 };
 
-EnhancedInputBackend::EnhancedInputBackend() = default;
-EnhancedInputBackend::~EnhancedInputBackend() { shutdown(); }
+EnhancedInputBackend::EnhancedInputBackend()
+    : dispatch_state_(std::make_shared<EnhancedInputDispatchState>())
+{
+}
+
+EnhancedInputBackend::~EnhancedInputBackend() { (void)shutdown(); }
 
 void EnhancedInputBackend::initialize()
 {
+    dispatch_state_->accepting.store(true, std::memory_order_release);
     initialized_.store(true, std::memory_order_release);
 }
 
-void EnhancedInputBackend::shutdown()
+bool EnhancedInputBackend::shutdown()
 {
-    if (!initialized_.exchange(false))
+    if (!initialized_.exchange(false, std::memory_order_acq_rel))
     {
-        return;
+        return dispatch_state_->live_bindings.load(std::memory_order_acquire) == 0;
     }
 
+    dispatch_state_->accepting.store(false, std::memory_order_release);
+
     std::scoped_lock lock(mutex_);
+    const bool on_game_thread = RC::Unreal::IsInGameThread();
+    const bool requires_module_pin =
+        !on_game_thread &&
+        (!bindings_.empty() || dispatch_state_->clone_created.load(std::memory_order_acquire));
     for (auto& [id, subscription] : subscriptions_)
     {
         subscription->active.store(false, std::memory_order_release);
     }
-    for (auto& binding : bindings_)
+    if (on_game_thread)
     {
-        detach(binding);
+        for (auto& binding : bindings_)
+        {
+            detach(binding);
+        }
     }
     bindings_.clear();
     subscriptions_.clear();
     targets_.clear();
-    events_.clear();
+    inactive_sessions_.clear();
+
+    {
+        std::scoped_lock event_lock(dispatch_state_->mutex);
+        dispatch_state_->events.clear();
+    }
+    return !requires_module_pin &&
+           dispatch_state_->live_bindings.load(std::memory_order_acquire) == 0;
 }
 
 UObject* EnhancedInputBackend::resolve_component(const std::wstring& path) const
@@ -177,7 +255,9 @@ bool EnhancedInputBackend::validate_component(UObject* component) const
     const auto* bindings = reinterpret_cast<const ABI::ActionEventBindingArray*>(
         reinterpret_cast<const std::byte*>(component) + ABI::action_event_bindings_offset);
     return bindings->size >= 0 && bindings->capacity >= bindings->size && bindings->capacity < 65536 &&
-           (bindings->capacity == 0 || bindings->data != nullptr);
+           (bindings->capacity == 0 ||
+            (bindings->data != nullptr &&
+             reinterpret_cast<std::uintptr_t>(bindings->data) % alignof(void*) == 0));
 }
 
 std::pair<uint64_t, std::string> EnhancedInputBackend::open_target(LuaSession& session, std::string component_path)
@@ -185,6 +265,11 @@ std::pair<uint64_t, std::string> EnhancedInputBackend::open_target(LuaSession& s
     if (!initialized_.load(std::memory_order_acquire))
     {
         return {0, "Enhanced Input backend is not initialized"};
+    }
+
+    {
+        std::scoped_lock lock(mutex_);
+        collect_inactive_locked();
     }
 
     auto* component = resolve_component(widen_ascii(component_path));
@@ -201,13 +286,26 @@ std::pair<uint64_t, std::string> EnhancedInputBackend::open_target(LuaSession& s
 
     const auto id = target.id;
     std::scoped_lock lock(mutex_);
-    targets_.emplace(id, std::move(target));
+    if (!initialized_.load(std::memory_order_acquire))
+    {
+        return {0, "Enhanced Input backend shut down during component lookup"};
+    }
+    const bool inserted = targets_.emplace(id, std::move(target)).second;
+    if (!inserted)
+    {
+        return {0, "Enhanced Input target handle collision"};
+    }
     return {id, {}};
 }
 
 bool EnhancedInputBackend::close_target(LuaSession& session, uint64_t target)
 {
     std::scoped_lock lock(mutex_);
+    if (!initialized_.load(std::memory_order_acquire))
+    {
+        return false;
+    }
+    collect_inactive_locked();
     const auto found = targets_.find(target);
     if (found == targets_.end() || found->second.session != &session)
     {
@@ -233,12 +331,17 @@ bool EnhancedInputBackend::close_target(LuaSession& session, uint64_t target)
 std::pair<uint64_t, std::string> EnhancedInputBackend::subscribe(
     LuaSession& session,
     uint64_t target_id,
-    int32_t callback_ref,
+    uint64_t callback_token,
     std::string action_path,
     std::string phase_name,
     ABI::TriggerEvent phase)
 {
     std::scoped_lock lock(mutex_);
+    if (!initialized_.load(std::memory_order_acquire))
+    {
+        return {0, "Enhanced Input backend is not initialized"};
+    }
+    collect_inactive_locked();
 
     const auto target_it = targets_.find(target_id);
     if (target_it == targets_.end() || target_it->second.session != &session)
@@ -262,19 +365,29 @@ std::pair<uint64_t, std::string> EnhancedInputBackend::subscribe(
     subscription->id = next_subscription_.fetch_add(1);
     subscription->target = target_id;
     subscription->session = &session;
-    subscription->callback_ref = callback_ref;
+    subscription->callback_token = callback_token;
     subscription->action_path_utf8 = std::move(action_path);
     subscription->phase_name = std::move(phase_name);
     subscription->phase = phase;
 
+    // Complete all potentially allocating bookkeeping before publishing the
+    // polymorphic binding into Unreal's array. After reserve succeeds, the
+    // final LiveBinding insertion cannot strand an untracked native object.
+    bindings_.reserve(bindings_.size() + 1);
+    const auto id = subscription->id;
+    const auto [subscription_it, inserted] = subscriptions_.emplace(id, subscription);
+    if (!inserted)
+    {
+        return {0, "Enhanced Input subscription handle collision"};
+    }
+
     auto* binding = attach(component, action, subscription);
     if (!binding)
     {
+        subscriptions_.erase(subscription_it);
         return {0, "Enhanced Input native binding creation failed"};
     }
 
-    const auto id = subscription->id;
-    subscriptions_.emplace(id, subscription);
     LiveBinding live{};
     live.component.assign(component);
     live.binding = binding;
@@ -311,12 +424,14 @@ bool EnhancedInputBackend::unsubscribe_locked(LuaSession& session, uint64_t id)
 bool EnhancedInputBackend::unsubscribe(LuaSession& session, uint64_t id)
 {
     std::scoped_lock lock(mutex_);
+    collect_inactive_locked();
     return unsubscribe_locked(session, id);
 }
 
 std::size_t EnhancedInputBackend::unsubscribe_all(LuaSession& session)
 {
     std::scoped_lock lock(mutex_);
+    collect_inactive_locked();
     std::vector<uint64_t> ids;
     for (const auto& [id, subscription] : subscriptions_)
     {
@@ -344,30 +459,85 @@ std::size_t EnhancedInputBackend::unsubscribe_all(LuaSession& session)
     return ids.size();
 }
 
-std::vector<EnhancedInputEvent> EnhancedInputBackend::take_events()
+void EnhancedInputBackend::deactivate(LuaSession& session, uint64_t id)
 {
-    std::scoped_lock lock(mutex_);
-    std::vector<EnhancedInputEvent> result;
-    result.swap(events_);
-    return result;
+    {
+        std::scoped_lock lock(mutex_);
+        const auto found = subscriptions_.find(id);
+        if (found == subscriptions_.end() || found->second->session != &session)
+        {
+            return;
+        }
+        found->second->active.store(false, std::memory_order_release);
+    }
+
+    std::scoped_lock event_lock(dispatch_state_->mutex);
+    std::erase_if(dispatch_state_->events, [&](const EnhancedInputEvent& event) {
+        return event.subscription == id;
+    });
 }
 
-void EnhancedInputBackend::enqueue(
-    const std::shared_ptr<EnhancedInputSubscription>& owner,
-    const ABI::InputActionInstanceView& instance)
+void EnhancedInputBackend::deactivate_all(LuaSession& session)
 {
-    EnhancedInputEvent event{};
-    event.subscription = owner->id;
-    event.owner = owner;
-    event.elapsed_processed = instance.elapsed_processed();
-    event.elapsed_triggered = instance.elapsed_triggered();
-    event.x = instance.x();
-    event.y = instance.y();
-    event.z = instance.z();
-    event.value_type = instance.value_type();
+    {
+        std::scoped_lock lock(mutex_);
+        inactive_sessions_.insert(&session);
+        for (auto& [id, subscription] : subscriptions_)
+        {
+            if (subscription->session == &session)
+            {
+                subscription->active.store(false, std::memory_order_release);
+            }
+        }
+    }
 
-    std::scoped_lock lock(mutex_);
-    events_.push_back(std::move(event));
+    std::scoped_lock event_lock(dispatch_state_->mutex);
+    std::erase_if(dispatch_state_->events, [&](const EnhancedInputEvent& event) {
+        return event.owner && event.owner->session == &session;
+    });
+}
+
+void EnhancedInputBackend::collect_inactive_locked()
+{
+    std::vector<uint64_t> ids;
+    for (const auto& [id, subscription] : subscriptions_)
+    {
+        if (!subscription->active.load(std::memory_order_acquire) ||
+            !subscription->session ||
+            inactive_sessions_.contains(subscription->session))
+        {
+            ids.push_back(id);
+        }
+    }
+
+    for (const auto id : ids)
+    {
+        const auto found = subscriptions_.find(id);
+        if (found != subscriptions_.end() && found->second->session)
+        {
+            unsubscribe_locked(*found->second->session, id);
+        }
+    }
+
+    for (auto it = targets_.begin(); it != targets_.end();)
+    {
+        if (!it->second.session || inactive_sessions_.contains(it->second.session))
+        {
+            it = targets_.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+}
+
+std::vector<EnhancedInputEvent> EnhancedInputBackend::take_events()
+{
+    std::scoped_lock lock(dispatch_state_->mutex);
+    std::vector<EnhancedInputEvent> result;
+    result.swap(dispatch_state_->events);
+    return result;
 }
 
 EnhancedInputBackend::NativeBinding* EnhancedInputBackend::attach(
@@ -384,7 +554,14 @@ EnhancedInputBackend::NativeBinding* EnhancedInputBackend::attach(
         reinterpret_cast<std::byte*>(component) + ABI::action_event_bindings_offset);
     if (array->size == array->capacity)
     {
-        const int32_t new_capacity = array->capacity == 0 ? 4 : array->capacity + std::max(4, array->capacity / 2);
+        constexpr int32_t maximum_capacity = 65535;
+        if (array->capacity >= maximum_capacity)
+        {
+            return nullptr;
+        }
+        const int32_t requested_capacity =
+            array->capacity == 0 ? 4 : array->capacity + std::max(4, array->capacity / 2);
+        const int32_t new_capacity = std::min(requested_capacity, maximum_capacity);
         void* resized = FMemory::Realloc(array->data, static_cast<std::size_t>(new_capacity) * sizeof(void*), alignof(void*));
         if (!resized)
         {
@@ -400,7 +577,7 @@ EnhancedInputBackend::NativeBinding* EnhancedInputBackend::attach(
         return nullptr;
     }
     auto* binding = ::new (memory) NativeBinding(
-        *this,
+        dispatch_state_,
         action,
         subscription->phase,
         next_binding_handle_.fetch_add(1),
