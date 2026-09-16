@@ -72,7 +72,7 @@ public:
     UE4SSLuaEventBridgeMod()
     {
         ModName = L"UE4SSLuaEventBridge";
-        ModVersion = L"0.2.9";
+        ModVersion = L"0.2.10";
         ModDescription = L"Game-agnostic native Enhanced Input callbacks for UE4SS Lua mods";
         ModAuthors = L"UE4SS Lua Event Bridge contributors";
         ModIntendedSDKVersion = L"3.0.1-97b7e501";
@@ -97,6 +97,7 @@ public:
             {
                 continue;
             }
+
             try
             {
                 const auto& lua = *session->lua;
@@ -125,12 +126,14 @@ public:
         session->id = next_session_id_.fetch_add(1);
         session->lua = &lua;
         auto* session_ptr = session.get();
+
         const auto register_state = [&](Lua* state) {
             if (!state) return;
             auto* raw_state = state->get_lua_state();
             if (!raw_state) return;
             session_index_.bind(raw_state, session_ptr);
         };
+
         register_state(&lua);
         register_state(&main_lua);
         register_state(&async_lua);
@@ -194,6 +197,7 @@ public:
                     assert(type(action) == "string", "action must be an object path")
                     assert(type(event) == "string", "event must be an ETriggerEvent name")
                     assert(type(callback) == "function", "callback must be a function")
+
                     local phases = {
                         Triggered = 1,
                         Started = 2,
@@ -246,9 +250,11 @@ public:
     {
         auto* session = session_for(lua);
         if (!session) return;
+
         session->active.store(false);
         backend_.unsubscribe_all(*session);
         session_index_.unbind(session);
+
         const auto owned = sessions_.find(session->id);
         if (owned != sessions_.end())
         {
@@ -275,7 +281,7 @@ public:
 private:
     static int get_version(const Lua& lua)
     {
-        lua.set_string("0.2.9");
+        lua.set_string("0.2.10");
         return 1;
     }
 
@@ -283,7 +289,7 @@ private:
     {
         lua.set_integer(2);
         lua.set_bool(active_mod && active_mod->backend_.available());
-        lua.set_bool(true); // explicit EnhancedInputComponent target required
+        lua.set_bool(true);
         lua.set_string("97b7e501");
         return 4;
     }
@@ -316,6 +322,7 @@ private:
             lua.set_string("Enhanced Input backend is not initialized");
             return 2;
         }
+
         auto* session = consume_session(lua);
         if (!session)
         {
@@ -333,13 +340,15 @@ private:
             return 2;
         }
 
-        auto [handle, backend_error] = active_mod->backend_.open_target(*session, std::move(component_path));
+        auto [handle, backend_error] =
+            active_mod->backend_.open_target(*session, std::move(component_path));
         if (handle == 0)
         {
             lua.set_nil();
             lua.set_string(backend_error);
             return 2;
         }
+
         lua.set_integer(static_cast<int64_t>(handle));
         return 1;
     }
@@ -348,7 +357,7 @@ private:
     {
         auto* session = consume_session(lua);
         const auto handle = static_cast<uint64_t>(lua.get_integer(1));
-        lua.set_bool(session && active_mod->backend_.close_target(*session, handle));
+        lua.set_bool(session && active_mod && active_mod->backend_.close_target(*session, handle));
         return 1;
     }
 
@@ -394,8 +403,6 @@ private:
         }
         const std::string phase_name(phase_view);
 
-        // After consuming session, target, packed path and phase, the callback
-        // is the sole remaining stack argument.
         const int32_t callback_ref = lua.registry().make_ref();
         auto [handle, backend_error] = active_mod->backend_.subscribe(
             *session, target, callback_ref, std::move(action_path), phase_name, phase);
@@ -405,6 +412,7 @@ private:
             lua.set_string(backend_error);
             return 2;
         }
+
         lua.set_integer(static_cast<int64_t>(handle));
         return 1;
     }
@@ -413,14 +421,17 @@ private:
     {
         auto* session = consume_session(lua);
         const auto handle = static_cast<uint64_t>(lua.get_integer(1));
-        lua.set_bool(session && active_mod->backend_.unsubscribe(*session, handle));
+        lua.set_bool(session && active_mod && active_mod->backend_.unsubscribe(*session, handle));
         return 1;
     }
 
     static int unbind_all(const Lua& lua)
     {
         auto* session = consume_session(lua);
-        lua.set_integer(session ? static_cast<int64_t>(active_mod->backend_.unsubscribe_all(*session)) : 0);
+        lua.set_integer(
+            session && active_mod
+                ? static_cast<int64_t>(active_mod->backend_.unsubscribe_all(*session))
+                : 0);
         return 1;
     }
 
