@@ -13,6 +13,7 @@ local nextObject = 0
 local nextHandle = 0
 local nativeTokens = {}
 local failNextBind = false
+local gameThread = true
 
 local function object(kind, path)
     local value = { kind = kind, path = path, valid = true }
@@ -74,10 +75,11 @@ function FName(value) return { value = value } end
 
 __UE4SSLuaEventBridge_SessionId = 17
 
-function UE4SSLuaEventBridge_GetVersion() return "0.3.0" end
+function UE4SSLuaEventBridge_GetVersion() return "0.3.1" end
 function UE4SSLuaEventBridge_GetCapabilities()
     return 3, true, true, true, true, true, true, "97b7e501"
 end
+function UE4SSLuaEventBridge_IsInGameThread() return gameThread end
 function UE4SSLuaEventBridge_OpenInputComponent(_session, ...)
     counters.targets_opened = counters.targets_opened + 1
     return counters.targets_opened
@@ -122,11 +124,29 @@ expect(bridge.GetCapabilities().helpers == true)
 local readOnly = pcall(function() Trigger.Tap = "changed" end)
 expect(not readOnly, "Trigger constants must be read-only")
 
+gameThread = false
+local offThreadScope, openThreadError = Helpers.OpenInput({
+    component_path = "/Game/Test.Component",
+    subsystem_path = subsystemPath,
+})
+expect(offThreadScope == nil and string.find(openThreadError, "game thread", 1, true))
+expect(counters.targets_opened == 0,
+    "off-thread OpenInput must not resolve or retain an Input Component")
+gameThread = true
+
 local scope, openError = Helpers.OpenInput({
     component_path = "/Game/Test.Component",
     subsystem_path = subsystemPath,
 })
 expect(scope ~= nil, openError)
+
+gameThread = false
+local objectsBeforeOffThreadBind = nextObject
+local offThreadHandle, offThreadError = scope:Bind("F9", Trigger.Tap, function() end)
+expect(offThreadHandle == nil and string.find(offThreadError, "game thread", 1, true))
+expect(nextObject == objectsBeforeOffThreadBind,
+    "off-thread Bind must not construct Unreal objects")
+gameThread = true
 
 local tapEvent
 local tapHandle, tapError = scope:Bind("F10", Trigger.Tap, function(event)
@@ -140,6 +160,17 @@ local holdHandle, holdError = scope:Bind("F10", Trigger.Hold, function(event)
 end, { threshold_seconds = 0.5, one_shot = true })
 expect(holdHandle ~= nil, holdError)
 expect(counters.contexts_added == 2)
+
+gameThread = false
+local removedOffThread, unbindThreadError = scope:Unbind(tapHandle)
+expect(not removedOffThread and string.find(unbindThreadError, "game thread", 1, true))
+expect(counters.native_unbound == 0 and counters.contexts_removed == 0,
+    "off-thread Unbind must not mutate native bindings or mapping contexts")
+local closedOffThread, closeThreadError = scope:Close()
+expect(not closedOffThread and string.find(closeThreadError, "game thread", 1, true))
+expect(counters.native_unbound == 0 and counters.contexts_removed == 0,
+    "off-thread Close must not mutate native bindings or mapping contexts")
+gameThread = true
 
 dispatch(nativeTokens[tapHandle], tapHandle, "/Engine/Transient.Tap", "Triggered",
     0.1, 0.0, 1.0, 0.0, 0.0, 0)
