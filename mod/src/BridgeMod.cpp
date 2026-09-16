@@ -27,7 +27,7 @@ namespace
 using RC::LuaMadeSimple::Lua;
 using UE4SSLuaEventBridge::EnhancedInputABI::TriggerEvent;
 
-constexpr int32_t packed_action_word_count = 16;
+constexpr int32_t packed_action_word_count = 64;
 constexpr int32_t packed_action_max_length = packed_action_word_count * 8;
 constexpr int32_t packed_action_phase_index = 2 + packed_action_word_count;
 constexpr int32_t packed_action_callback_index = packed_action_phase_index + 1;
@@ -41,7 +41,7 @@ public:
     UE4SSLuaEventBridgeMod()
     {
         ModName = L"UE4SSLuaEventBridge";
-        ModVersion = L"0.2.4";
+        ModVersion = L"0.2.5";
         ModDescription = L"Native Unreal event callbacks for UE4SS Lua mods";
         ModAuthors = L"UE4SS Lua Event Bridge contributors";
         ModIntendedSDKVersion = L"3.0.1-97b7e501";
@@ -123,7 +123,7 @@ public:
                     assert(type(action) == "string", "action must be an object path")
                     assert(type(event) == "string", "event must be an ETriggerEvent name")
                     assert(type(callback) == "function", "callback must be a function")
-                    assert(#action > 0 and #action <= 128, "action object path must be 1..128 bytes")
+                    assert(#action > 0 and #action <= 512, "action object path must be 1..512 bytes")
                     local phases = {
                         Triggered = 1,
                         Started = 2,
@@ -134,36 +134,32 @@ public:
                     local phase = phases[event]
                     assert(phase ~= nil, "unsupported ETriggerEvent name")
 
-                    -- UE4SS 3.0.1 returns std::string_view from Lua::get_string across
-                    -- the DLL boundary. That return ABI is not safe for this pinned
-                    -- runtime, so encode the object path as primitive integers before
-                    -- entering native code. The public API remains string-based.
+                    -- Keep std::string/std::string_view out of the Lua -> C++ ABI.
+                    -- Transient Enhanced Input object paths in UE5 can easily exceed
+                    -- 128 bytes, so encode up to 512 bytes as primitive 64-bit words.
                     local words = {}
-                    for i = 1, 16 do words[i] = 0 end
+                    for i = 1, 64 do words[i] = 0 end
                     for i = 1, #action do
                         local word = ((i - 1) // 8) + 1
                         local shift = ((i - 1) % 8) * 8
                         words[word] = words[word] | (string.byte(action, i) << shift)
                     end
 
-                    return UE4SSLuaEventBridge_BindAction(
-                        #action,
-                        words[1], words[2], words[3], words[4],
-                        words[5], words[6], words[7], words[8],
-                        words[9], words[10], words[11], words[12],
-                        words[13], words[14], words[15], words[16],
-                        phase,
-                        function(handle, sourceAction, phaseName, elapsed, triggered, x, y, z, valueType)
-                            callback({
-                                subscription = handle,
-                                source_type = "enhanced_input",
-                                action = sourceAction,
-                                phase = phaseName,
-                                elapsed_processed = elapsed,
-                                elapsed_triggered = triggered,
-                                value = { x = x, y = y, z = z, type = valueType },
-                            })
-                        end)
+                    local args = { #action }
+                    for i = 1, 64 do args[#args + 1] = words[i] end
+                    args[#args + 1] = phase
+                    args[#args + 1] = function(handle, sourceAction, phaseName, elapsed, triggered, x, y, z, valueType)
+                        callback({
+                            subscription = handle,
+                            source_type = "enhanced_input",
+                            action = sourceAction,
+                            phase = phaseName,
+                            elapsed_processed = elapsed,
+                            elapsed_triggered = triggered,
+                            value = { x = x, y = y, z = z, type = valueType },
+                        })
+                    end
+                    return UE4SSLuaEventBridge_BindAction(table.unpack(args, 1, #args))
                 end,
                 SubscribeEnhancedInput = function(spec, callback)
                     assert(type(spec) == "table", "spec must be a table")
@@ -202,7 +198,7 @@ public:
 private:
     static int get_version(const Lua& lua)
     {
-        lua.set_string("0.2.4");
+        lua.set_string("0.2.5");
         return 1;
     }
 
