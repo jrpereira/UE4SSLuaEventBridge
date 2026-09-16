@@ -2,6 +2,7 @@
 #include <UE4SSLuaEventBridge/SessionAliasIndex.hpp>
 #include <UE4SSLuaEventBridge/UE4SSABI.hpp>
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -26,6 +27,11 @@ namespace
 using RC::LuaMadeSimple::Lua;
 using UE4SSLuaEventBridge::EnhancedInputABI::TriggerEvent;
 
+constexpr int32_t packed_action_word_count = 16;
+constexpr int32_t packed_action_max_length = packed_action_word_count * 8;
+constexpr int32_t packed_action_phase_index = 2 + packed_action_word_count;
+constexpr int32_t packed_action_callback_index = packed_action_phase_index + 1;
+
 class UE4SSLuaEventBridgeMod;
 UE4SSLuaEventBridgeMod* active_mod{};
 
@@ -35,7 +41,7 @@ public:
     UE4SSLuaEventBridgeMod()
     {
         ModName = L"UE4SSLuaEventBridge";
-        ModVersion = L"0.2.3";
+        ModVersion = L"0.2.4";
         ModDescription = L"Native Unreal event callbacks for UE4SS Lua mods";
         ModAuthors = L"UE4SS Lua Event Bridge contributors";
         ModIntendedSDKVersion = L"3.0.1-97b7e501";
@@ -117,6 +123,7 @@ public:
                     assert(type(action) == "string", "action must be an object path")
                     assert(type(event) == "string", "event must be an ETriggerEvent name")
                     assert(type(callback) == "function", "callback must be a function")
+                    assert(#action > 0 and #action <= 128, "action object path must be 1..128 bytes")
                     local phases = {
                         Triggered = 1,
                         Started = 2,
@@ -126,13 +133,32 @@ public:
                     }
                     local phase = phases[event]
                     assert(phase ~= nil, "unsupported ETriggerEvent name")
-                    return UE4SSLuaEventBridge_BindAction(action, phase,
-                        function(handle, sourceAction, phase, elapsed, triggered, x, y, z, valueType)
+
+                    -- UE4SS 3.0.1 returns std::string_view from Lua::get_string across
+                    -- the DLL boundary. That return ABI is not safe for this pinned
+                    -- runtime, so encode the object path as primitive integers before
+                    -- entering native code. The public API remains string-based.
+                    local words = {}
+                    for i = 1, 16 do words[i] = 0 end
+                    for i = 1, #action do
+                        local word = ((i - 1) // 8) + 1
+                        local shift = ((i - 1) % 8) * 8
+                        words[word] = words[word] | (string.byte(action, i) << shift)
+                    end
+
+                    return UE4SSLuaEventBridge_BindAction(
+                        #action,
+                        words[1], words[2], words[3], words[4],
+                        words[5], words[6], words[7], words[8],
+                        words[9], words[10], words[11], words[12],
+                        words[13], words[14], words[15], words[16],
+                        phase,
+                        function(handle, sourceAction, phaseName, elapsed, triggered, x, y, z, valueType)
                             callback({
                                 subscription = handle,
                                 source_type = "enhanced_input",
                                 action = sourceAction,
-                                phase = phase,
+                                phase = phaseName,
                                 elapsed_processed = elapsed,
                                 elapsed_triggered = triggered,
                                 value = { x = x, y = y, z = z, type = valueType },
@@ -176,7 +202,7 @@ public:
 private:
     static int get_version(const Lua& lua)
     {
-        lua.set_string("0.2.3");
+        lua.set_string("0.2.4");
         return 1;
     }
 
@@ -213,26 +239,60 @@ private:
             lua.set_string("Lua session is not registered");
             return 2;
         }
-        if (!lua.is_function(3))
+        if (!lua.is_function(packed_action_callback_index))
         {
             lua.set_nil();
             lua.set_string("callback must be a function");
             return 2;
         }
 
-        const std::string action_path(lua.get_string(1));
-        const auto [phase, phase_view] = parse_phase(lua.get_integer(2));
-        const std::string phase_name(phase_view);
-        if (action_path.empty() || phase == TriggerEvent::None)
+        const auto action_length = lua.get_integer(1);
+        if (action_length <= 0 || action_length > packed_action_max_length)
         {
             lua.set_nil();
-            lua.set_string("invalid action path or trigger event");
+            lua.set_string("invalid encoded action path length");
             return 2;
         }
 
+        std::array<uint64_t, packed_action_word_count> words{};
+        for (int32_t index = 0; index < packed_action_word_count; ++index)
+        {
+            words[static_cast<std::size_t>(index)] = static_cast<uint64_t>(lua.get_integer(2 + index));
+        }
+
+        std::string action_path(static_cast<std::size_t>(action_length), '\0');
+        for (int64_t index = 0; index < action_length; ++index)
+        {
+            const auto word = words[static_cast<std::size_t>(index / 8)];
+            const auto shift = static_cast<uint32_t>((index % 8) * 8);
+            const auto byte = static_cast<uint8_t>((word >> shift) & 0xFFu);
+            if (byte == 0)
+            {
+                lua.set_nil();
+                lua.set_string("invalid encoded action path byte");
+                return 2;
+            }
+            action_path[static_cast<std::size_t>(index)] = static_cast<char>(byte);
+        }
+
+        const auto [phase, phase_view] = parse_phase(lua.get_integer(packed_action_phase_index));
+        if (phase == TriggerEvent::None)
+        {
+            lua.set_nil();
+            lua.set_string("invalid trigger event");
+            return 2;
+        }
+        const std::string phase_name(phase_view);
+
         const int32_t callback_ref = lua.registry().make_ref();
         const uint64_t handle = active_mod->backend_.subscribe(
-            *session, callback_ref, action_path, phase_name, phase);
+            *session, callback_ref, std::move(action_path), phase_name, phase);
+        if (handle == 0)
+        {
+            lua.set_nil();
+            lua.set_string("Enhanced Input subscription creation failed");
+            return 2;
+        }
         lua.set_integer(static_cast<int64_t>(handle));
         return 1;
     }
