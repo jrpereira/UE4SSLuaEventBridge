@@ -12,12 +12,26 @@
 #include <utility>
 #include <vector>
 
+#if defined(_MSC_VER)
+#define UE4SSLEB_WINAPI __stdcall
+#else
+#define UE4SSLEB_WINAPI
+#endif
+
+extern "C" __declspec(dllimport) int UE4SSLEB_WINAPI GetModuleHandleExW(
+    unsigned long flags,
+    const wchar_t* module_address,
+    void** module);
+
+#undef UE4SSLEB_WINAPI
+
 namespace UE4SSLuaEventBridge
 {
 struct LuaSession
 {
     uint64_t id{};
     RC::LuaMadeSimple::Lua* lua{};
+    int32_t dispatcher_ref{};
     std::atomic_bool active{true};
 };
 }
@@ -29,11 +43,23 @@ using UE4SSLuaEventBridge::EnhancedInputABI::TriggerEvent;
 
 constexpr int32_t packed_path_word_count = 64;
 constexpr int32_t packed_path_max_length = packed_path_word_count * 8;
-constexpr int32_t bind_callback_index =
-    packed_path_word_count + 5; // session + target + length + words + phase + callback
 
 class UE4SSLuaEventBridgeMod;
 UE4SSLuaEventBridgeMod* active_mod{};
+
+bool pin_current_module()
+{
+    constexpr unsigned long from_address = 0x00000004UL;
+    static const bool pinned = [] {
+        void* module{};
+        return GetModuleHandleExW(
+                   from_address,
+                   reinterpret_cast<const wchar_t*>(&active_mod),
+                   &module) != 0;
+    }();
+    return pinned;
+}
+
 
 bool decode_packed_path(const Lua& lua, std::string& path, std::string& error)
 {
@@ -72,7 +98,7 @@ public:
     UE4SSLuaEventBridgeMod()
     {
         ModName = L"UE4SSLuaEventBridge";
-        ModVersion = L"0.2.10";
+        ModVersion = L"0.2.11";
         ModDescription = L"Game-agnostic native Enhanced Input callbacks for UE4SS Lua mods";
         ModAuthors = L"UE4SS Lua Event Bridge contributors";
         ModIntendedSDKVersion = L"3.0.1-97b7e501";
@@ -81,9 +107,11 @@ public:
 
     ~UE4SSLuaEventBridgeMod() override
     {
-        backend_.shutdown();
+        (void)backend_.shutdown();
         active_mod = nullptr;
     }
+
+    [[nodiscard]] bool prepare_for_unload() { return backend_.shutdown(); }
 
     void on_unreal_init() override { backend_.initialize(); }
 
@@ -101,7 +129,8 @@ public:
             try
             {
                 const auto& lua = *session->lua;
-                lua.registry().get_function_ref(subscription->callback_ref);
+                lua.registry().get_function_ref(session->dispatcher_ref);
+                lua.set_integer(static_cast<int64_t>(subscription->callback_token));
                 lua.set_integer(static_cast<int64_t>(event.subscription));
                 lua.set_string(subscription->action_path_utf8);
                 lua.set_string(subscription->phase_name);
@@ -111,11 +140,14 @@ public:
                 lua.set_number(event.y);
                 lua.set_number(event.z);
                 lua.set_integer(static_cast<int64_t>(event.value_type));
-                lua.call_function(9, 0);
+                lua.call_function(10, 0);
             }
             catch (...)
             {
-                backend_.unsubscribe(*session, subscription->id);
+                // Lua callbacks run on UE4SS's event-loop thread. Deactivate
+                // immediately, then let the next game-thread bridge operation
+                // detach the native binding.
+                backend_.deactivate(*session, subscription->id);
             }
         }
     }
@@ -126,19 +158,6 @@ public:
         session->id = next_session_id_.fetch_add(1);
         session->lua = &lua;
         auto* session_ptr = session.get();
-
-        const auto register_state = [&](Lua* state) {
-            if (!state) return;
-            auto* raw_state = state->get_lua_state();
-            if (!raw_state) return;
-            session_index_.bind(raw_state, session_ptr);
-        };
-
-        register_state(&lua);
-        register_state(&main_lua);
-        register_state(&async_lua);
-        register_state(hook_lua);
-        sessions_.insert_or_assign(session_ptr->id, std::move(session));
 
         lua.register_function("UE4SSLuaEventBridge_GetVersion", &get_version);
         lua.register_function("UE4SSLuaEventBridge_GetCapabilities", &get_capabilities);
@@ -155,6 +174,61 @@ public:
         lua.execute_string(R"lua(
             local __session = assert(__UE4SSLuaEventBridge_SessionId, "bridge session id is missing")
             __UE4SSLuaEventBridge_SessionId = nil
+            local __callbacks = {}
+            local __bindings = {}
+            local __nextCallbackToken = 0
+
+            local function __UE4SSLuaEventBridge_Forget(handle)
+                local binding = __bindings[handle]
+                if binding ~= nil then
+                    __callbacks[binding.token] = nil
+                    __bindings[handle] = nil
+                end
+            end
+
+            local function __UE4SSLuaEventBridge_ForgetTarget(target)
+                local handles = {}
+                for handle, binding in pairs(__bindings) do
+                    if binding.target == target then
+                        handles[#handles + 1] = handle
+                    end
+                end
+                for _, handle in ipairs(handles) do
+                    __UE4SSLuaEventBridge_Forget(handle)
+                end
+            end
+
+            local function __UE4SSLuaEventBridge_ClearCallbacks()
+                __callbacks = {}
+                __bindings = {}
+            end
+
+            local function __UE4SSLuaEventBridge_Traceback(message)
+                if debug ~= nil and debug.traceback ~= nil then
+                    return debug.traceback(message, 2)
+                end
+                return tostring(message)
+            end
+
+            local function __UE4SSLuaEventBridge_Dispatch(
+                token, handle, sourceAction, phaseName, elapsed, triggered, x, y, z, valueType)
+                local callback = __callbacks[token]
+                if callback == nil then return end
+
+                local ok, callbackError = xpcall(callback, __UE4SSLuaEventBridge_Traceback, {
+                    subscription = handle,
+                    source_type = "enhanced_input",
+                    action = sourceAction,
+                    phase = phaseName,
+                    elapsed_processed = elapsed,
+                    elapsed_triggered = triggered,
+                    value = { x = x, y = y, z = z, type = valueType },
+                })
+                if not ok then
+                    __UE4SSLuaEventBridge_Forget(handle)
+                    error(callbackError, 0)
+                end
+            end
 
             local function __UE4SSLuaEventBridge_PackPath(path)
                 assert(type(path) == "string", "object path must be a string")
@@ -190,7 +264,11 @@ public:
                     return UE4SSLuaEventBridge_OpenInputComponent(table.unpack(args, 1, #args))
                 end,
                 CloseInputComponent = function(targetHandle)
-                    return UE4SSLuaEventBridge_CloseInputComponent(__session, targetHandle)
+                    local closed = UE4SSLuaEventBridge_CloseInputComponent(__session, targetHandle)
+                    if closed then
+                        __UE4SSLuaEventBridge_ForgetTarget(targetHandle)
+                    end
+                    return closed
                 end,
                 BindAction = function(targetHandle, action, event, callback)
                     assert(type(targetHandle) == "number", "targetHandle must come from OpenInputComponent")
@@ -212,18 +290,20 @@ public:
                     local args = { __session, targetHandle }
                     for i = 1, #packed do args[#args + 1] = packed[i] end
                     args[#args + 1] = phase
-                    args[#args + 1] = function(handle, sourceAction, phaseName, elapsed, triggered, x, y, z, valueType)
-                        callback({
-                            subscription = handle,
-                            source_type = "enhanced_input",
-                            action = sourceAction,
-                            phase = phaseName,
-                            elapsed_processed = elapsed,
-                            elapsed_triggered = triggered,
-                            value = { x = x, y = y, z = z, type = valueType },
-                        })
+
+                    __nextCallbackToken = __nextCallbackToken + 1
+                    local token = __nextCallbackToken
+                    __callbacks[token] = callback
+                    args[#args + 1] = token
+
+                    local handle, bindError =
+                        UE4SSLuaEventBridge_BindAction(table.unpack(args, 1, #args))
+                    if handle == nil then
+                        __callbacks[token] = nil
+                        return nil, bindError
                     end
-                    return UE4SSLuaEventBridge_BindAction(table.unpack(args, 1, #args))
+                    __bindings[handle] = { token = token, target = targetHandle }
+                    return handle
                 end,
                 SubscribeEnhancedInput = function(spec, callback)
                     assert(type(spec) == "table", "spec must be a table")
@@ -231,19 +311,58 @@ public:
                     return UE4SSLuaEventBridge.BindAction(spec.target, spec.action, spec.event, callback)
                 end,
                 Unbind = function(handle)
-                    return UE4SSLuaEventBridge_Unbind(__session, handle)
+                    local removed = UE4SSLuaEventBridge_Unbind(__session, handle)
+                    if removed then
+                        __UE4SSLuaEventBridge_Forget(handle)
+                    end
+                    return removed
                 end,
                 Unsubscribe = function(handle)
-                    return UE4SSLuaEventBridge_Unbind(__session, handle)
+                    local removed = UE4SSLuaEventBridge_Unbind(__session, handle)
+                    if removed then
+                        __UE4SSLuaEventBridge_Forget(handle)
+                    end
+                    return removed
                 end,
                 UnbindAll = function()
-                    return UE4SSLuaEventBridge_UnbindAll(__session)
+                    local count, completed = UE4SSLuaEventBridge_UnbindAll(__session)
+                    if completed then
+                        __UE4SSLuaEventBridge_ClearCallbacks()
+                    end
+                    return count
                 end,
                 UnsubscribeAll = function()
-                    return UE4SSLuaEventBridge_UnbindAll(__session)
+                    local count, completed = UE4SSLuaEventBridge_UnbindAll(__session)
+                    if completed then
+                        __UE4SSLuaEventBridge_ClearCallbacks()
+                    end
+                    return count
                 end,
             }
+
+            return __UE4SSLuaEventBridge_Dispatch
         )lua");
+
+        // The setup chunk returns one dispatcher closure. Keeping one registry
+        // reference per Lua session avoids retaining one native registry entry
+        // for every bind/unbind cycle. The Lua-side tables own individual
+        // callbacks and release them immediately on unbind or bind failure.
+        session_ptr->dispatcher_ref = lua.registry().make_ref();
+
+        // Publish the session only after all Lua setup has succeeded. If either
+        // setup chunk throws, no stale Lua pointer or state alias survives.
+        const auto register_state = [&](Lua* state) {
+            if (!state) return;
+            auto* raw_state = state->get_lua_state();
+            if (!raw_state) return;
+            session_index_.bind(raw_state, session_ptr);
+        };
+
+        register_state(&lua);
+        register_state(&main_lua);
+        register_state(&async_lua);
+        register_state(hook_lua);
+        sessions_.insert_or_assign(session_ptr->id, std::move(session));
     }
 
     void on_lua_stop(RC::StringViewType, Lua& lua, Lua&, Lua&, Lua*) override
@@ -251,8 +370,16 @@ public:
         auto* session = session_for(lua);
         if (!session) return;
 
-        session->active.store(false);
-        backend_.unsubscribe_all(*session);
+        if (RC::Unreal::IsInGameThread())
+        {
+            backend_.unsubscribe_all(*session);
+            session->active.store(false, std::memory_order_release);
+        }
+        else
+        {
+            session->active.store(false, std::memory_order_release);
+            backend_.deactivate_all(*session);
+        }
         session_index_.unbind(session);
 
         const auto owned = sessions_.find(session->id);
@@ -281,7 +408,7 @@ public:
 private:
     static int get_version(const Lua& lua)
     {
-        lua.set_string("0.2.10");
+        lua.set_string("0.2.11");
         return 1;
     }
 
@@ -322,6 +449,12 @@ private:
             lua.set_string("Enhanced Input backend is not initialized");
             return 2;
         }
+        if (!RC::Unreal::IsInGameThread())
+        {
+            lua.set_nil();
+            lua.set_string("OpenInputComponent must run on the Unreal game thread");
+            return 2;
+        }
 
         auto* session = consume_session(lua);
         if (!session)
@@ -357,7 +490,9 @@ private:
     {
         auto* session = consume_session(lua);
         const auto handle = static_cast<uint64_t>(lua.get_integer(1));
-        lua.set_bool(session && active_mod && active_mod->backend_.close_target(*session, handle));
+        lua.set_bool(
+            RC::Unreal::IsInGameThread() && session && active_mod &&
+            active_mod->backend_.close_target(*session, handle));
         return 1;
     }
 
@@ -369,10 +504,10 @@ private:
             lua.set_string("Enhanced Input backend is not initialized");
             return 2;
         }
-        if (!lua.is_function(bind_callback_index))
+        if (!RC::Unreal::IsInGameThread())
         {
             lua.set_nil();
-            lua.set_string("callback must be a function");
+            lua.set_string("BindAction must run on the Unreal game thread");
             return 2;
         }
 
@@ -403,9 +538,16 @@ private:
         }
         const std::string phase_name(phase_view);
 
-        const int32_t callback_ref = lua.registry().make_ref();
+        const auto callback_token_value = lua.get_integer(1);
+        if (callback_token_value <= 0)
+        {
+            lua.set_nil();
+            lua.set_string("invalid callback token");
+            return 2;
+        }
+        const auto callback_token = static_cast<uint64_t>(callback_token_value);
         auto [handle, backend_error] = active_mod->backend_.subscribe(
-            *session, target, callback_ref, std::move(action_path), phase_name, phase);
+            *session, target, callback_token, std::move(action_path), phase_name, phase);
         if (handle == 0)
         {
             lua.set_nil();
@@ -421,18 +563,20 @@ private:
     {
         auto* session = consume_session(lua);
         const auto handle = static_cast<uint64_t>(lua.get_integer(1));
-        lua.set_bool(session && active_mod && active_mod->backend_.unsubscribe(*session, handle));
+        lua.set_bool(
+            RC::Unreal::IsInGameThread() && session && active_mod &&
+            active_mod->backend_.unsubscribe(*session, handle));
         return 1;
     }
 
     static int unbind_all(const Lua& lua)
     {
         auto* session = consume_session(lua);
+        const bool can_unbind = RC::Unreal::IsInGameThread() && session && active_mod;
         lua.set_integer(
-            session && active_mod
-                ? static_cast<int64_t>(active_mod->backend_.unsubscribe_all(*session))
-                : 0);
-        return 1;
+            can_unbind ? static_cast<int64_t>(active_mod->backend_.unsubscribe_all(*session)) : 0);
+        lua.set_bool(can_unbind);
+        return 2;
     }
 
     UE4SSLuaEventBridge::EnhancedInputBackend backend_;
@@ -447,5 +591,16 @@ private:
 extern "C"
 {
 UE4SS_LUA_EVENT_BRIDGE_API RC::CppUserModBase* start_mod() { return new UE4SSLuaEventBridgeMod(); }
-UE4SS_LUA_EVENT_BRIDGE_API void uninstall_mod(RC::CppUserModBase* mod) { delete mod; }
+UE4SS_LUA_EVENT_BRIDGE_API void uninstall_mod(RC::CppUserModBase* mod)
+{
+    auto* bridge = static_cast<UE4SSLuaEventBridgeMod*>(mod);
+    if (bridge && !bridge->prepare_for_unload())
+    {
+        // UE4SS unloads C++ mods from its event-loop thread. If Unreal still
+        // owns a native binding (including an engine-created clone), retain
+        // this DLL so its vtable and destructor code cannot become dangling.
+        (void)pin_current_module();
+    }
+    delete bridge;
+}
 }
