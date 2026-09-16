@@ -16,7 +16,7 @@ local version = bridge.GetVersion()
 local capabilities = bridge.GetCapabilities()
 ```
 
-Version 0.3.1 reports API version 3:
+Version 0.3.2 reports API version 3:
 
 ```lua
 {

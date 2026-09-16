@@ -7,6 +7,8 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -99,7 +101,7 @@ public:
     UE4SSLuaEventBridgeMod()
     {
         ModName = L"UE4SSLuaEventBridge";
-        ModVersion = L"0.3.1";
+        ModVersion = L"0.3.2";
         ModDescription = L"Game-agnostic native Enhanced Input callbacks for UE4SS Lua mods";
         ModAuthors = L"UE4SS Lua Event Bridge contributors";
         ModIntendedSDKVersion = L"3.0.1-97b7e501";
@@ -186,8 +188,9 @@ public:
         // callbacks and release them immediately on unbind or bind failure.
         session_ptr->dispatcher_ref = lua.registry().make_ref();
 
-        // Publish the session only after all Lua setup has succeeded. If either
-        // setup chunk throws, no stale Lua pointer or state alias survives.
+        // Publish the session only after all Lua setup has succeeded. Session
+        // storage owns the pointer before aliases become visible, and alias
+        // publication rolls back completely if an allocation fails.
         const auto register_state = [&](Lua* state) {
             if (!state) return;
             auto* raw_state = state->get_lua_state();
@@ -195,11 +198,29 @@ public:
             session_index_.bind(raw_state, session_ptr);
         };
 
-        register_state(&lua);
-        register_state(&main_lua);
-        register_state(&async_lua);
-        register_state(hook_lua);
-        sessions_.insert_or_assign(session_ptr->id, std::move(session));
+        {
+            std::scoped_lock lock(session_mutex_);
+            const bool inserted = sessions_.emplace(session_ptr->id, std::move(session)).second;
+            if (!inserted)
+            {
+                throw std::runtime_error("Lua session ID collision");
+            }
+        }
+
+        try
+        {
+            register_state(&lua);
+            register_state(&main_lua);
+            register_state(&async_lua);
+            register_state(hook_lua);
+        }
+        catch (...)
+        {
+            session_index_.unbind(session_ptr);
+            std::scoped_lock lock(session_mutex_);
+            sessions_.erase(session_ptr->id);
+            throw;
+        }
     }
 
     void on_lua_stop(RC::StringViewType, Lua& lua, Lua&, Lua&, Lua*) override
@@ -229,13 +250,9 @@ public:
             backend_.deactivate_all(*session);
         }
         session_index_.unbind(session);
-
-        const auto owned = sessions_.find(session->id);
-        if (owned != sessions_.end())
-        {
-            retired_sessions_.push_back(std::move(owned->second));
-            sessions_.erase(owned);
-        }
+        // Keep the inactive record until bridge destruction. Queued events
+        // and in-flight child-state calls can still hold its raw address, and
+        // session IDs are never reused.
     }
 
     UE4SSLuaEventBridge::LuaSession* session_for(const Lua& lua)
@@ -245,6 +262,7 @@ public:
 
     UE4SSLuaEventBridge::LuaSession* session_for_id(uint64_t id)
     {
+        std::scoped_lock lock(session_mutex_);
         const auto found = sessions_.find(id);
         if (found == sessions_.end() || !found->second || !found->second->active.load())
         {
@@ -256,7 +274,7 @@ public:
 private:
     static int get_version(const Lua& lua)
     {
-        lua.set_string("0.3.1");
+        lua.set_string("0.3.2");
         return 1;
     }
 
@@ -439,9 +457,9 @@ private:
 
     UE4SSLuaEventBridge::EnhancedInputBackend backend_;
     std::atomic_uint64_t next_session_id_{1};
+    std::mutex session_mutex_;
     std::unordered_map<uint64_t, std::unique_ptr<UE4SSLuaEventBridge::LuaSession>> sessions_;
     UE4SSLuaEventBridge::SessionAliasIndex<lua_State, UE4SSLuaEventBridge::LuaSession> session_index_;
-    std::vector<std::unique_ptr<UE4SSLuaEventBridge::LuaSession>> retired_sessions_;
 };
 }
 

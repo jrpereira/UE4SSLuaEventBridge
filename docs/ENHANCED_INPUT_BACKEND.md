@@ -101,7 +101,7 @@ The Lua caller owns target selection, rebinding, and unbinding policy.
 
 ## Helper layer boundary
 
-Version 0.3.1's `Helpers.OpenInput` layer is shipped in the bridge's embedded
+Version 0.3.2's `Helpers.OpenInput` layer is shipped in the bridge's embedded
 Lua API. It uses UE4SS object construction and ordinary reflected Enhanced
 Input calls to create transient mapping contexts, Input Actions, and Tap/Hold
 triggers. The ABI-pinned native backend remains responsible only for explicit
