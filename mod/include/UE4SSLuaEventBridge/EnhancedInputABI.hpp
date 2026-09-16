@@ -96,11 +96,15 @@ public:
     ActionEventBinding(const UObject* action, TriggerEvent event, uint32_t binding_handle);
     ~ActionEventBinding() override = default;
 
+    // IMPORTANT: this declaration order is ABI-significant. It matches
+    // UE 5.5 FEnhancedInputActionEventBinding exactly:
+    // Execute, Clone, SetShouldFireWithEditorScriptGuard,
+    // IsBoundToObject, GetUObject.
     virtual void Execute(const InputActionInstanceView& instance) const = 0;
-    virtual UObject* GetUObject() const = 0;
-    virtual bool IsBoundToObject(const void* object) const = 0;
-    virtual void SetShouldFireWithEditorScriptGuard(bool enabled) = 0;
     virtual UniquePtr<ActionEventBinding> Clone() const = 0;
+    virtual void SetShouldFireWithEditorScriptGuard(bool enabled) = 0;
+    virtual bool IsBoundToObject(const void* object) const = 0;
+    virtual UObject* GetUObject() const = 0;
 
     FWeakObjectPtr action;
     TriggerEvent event{TriggerEvent::None};
