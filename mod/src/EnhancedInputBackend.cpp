@@ -301,11 +301,32 @@ void EnhancedInputBackend::enqueue(
 
 void EnhancedInputBackend::note_object_created(const UObjectBase* object)
 {
-    // The create listener can run before the first Enhanced Input component or
-    // requested action exists. Schedule one rescan for any newly created
-    // UObject; the ProcessEvent post-hook performs the actual work after
-    // construction has completed and only when work_pending_ is set.
-    if (object && initialized_.load(std::memory_order_acquire))
+    if (!object || !initialized_.load(std::memory_order_acquire))
+    {
+        return;
+    }
+
+    // UObject creation is extremely frequent during normal UI interaction.
+    // Only schedule another expensive discovery pass while at least one active
+    // subscription is still missing a native binding. Once all subscriptions
+    // are attached this listener reduces to the checks below and no longer
+    // drives FindAllOf(PlayerController/InputAction) on every constructed object.
+    bool needs_discovery{};
+    {
+        std::scoped_lock lock(mutex_);
+        needs_discovery = std::any_of(subscriptions_.begin(), subscriptions_.end(), [&](const auto& entry) {
+            const auto& subscription = entry.second;
+            if (!subscription->active.load(std::memory_order_acquire))
+            {
+                return false;
+            }
+            return std::none_of(bindings_.begin(), bindings_.end(), [&](const LiveBinding& live) {
+                return live.subscription == subscription->id;
+            });
+        });
+    }
+
+    if (needs_discovery)
     {
         work_pending_.store(true, std::memory_order_release);
     }
@@ -313,13 +334,25 @@ void EnhancedInputBackend::note_object_created(const UObjectBase* object)
 
 void EnhancedInputBackend::note_object_deleted(const UObjectBase* object)
 {
-    std::scoped_lock lock(mutex_);
-    const auto* deleted = reinterpret_cast<const UObject*>(object);
-    bindings_.erase(
-        std::remove_if(bindings_.begin(), bindings_.end(), [deleted](const LiveBinding& live) {
-            return live.component == deleted;
-        }),
-        bindings_.end());
+    bool lost_binding{};
+    {
+        std::scoped_lock lock(mutex_);
+        const auto* deleted = reinterpret_cast<const UObject*>(object);
+        const auto previous_size = bindings_.size();
+        bindings_.erase(
+            std::remove_if(bindings_.begin(), bindings_.end(), [deleted](const LiveBinding& live) {
+                return live.component == deleted;
+            }),
+            bindings_.end());
+        lost_binding = bindings_.size() != previous_size;
+    }
+
+    // A destroyed EnhancedInputComponent means the local player/input stack is
+    // being rebuilt. Re-arm discovery so the subscriptions follow the new component.
+    if (lost_binding)
+    {
+        work_pending_.store(true, std::memory_order_release);
+    }
 }
 
 UObject* EnhancedInputBackend::resolve_action(const std::wstring& path) const
@@ -473,6 +506,23 @@ void EnhancedInputBackend::process_game_thread_work()
         if (!subscription->active.load(std::memory_order_acquire))
         {
             it = subscriptions_.erase(it);
+            continue;
+        }
+
+        if (components.empty())
+        {
+            ++it;
+            continue;
+        }
+
+        const bool fully_bound = std::all_of(components.begin(), components.end(), [&](UObject* component) {
+            return std::any_of(bindings_.begin(), bindings_.end(), [&](const LiveBinding& live) {
+                return live.component == component && live.subscription == subscription->id;
+            });
+        });
+        if (fully_bound)
+        {
+            ++it;
             continue;
         }
 
