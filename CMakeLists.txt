@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(UE4SSLuaEventBridge VERSION 0.2.6 LANGUAGES CXX)
+project(UE4SSLuaEventBridge VERSION 0.2.7 LANGUAGES CXX)
 
 option(UE4SSLEB_BUILD_TESTS "Build portable unit tests" ON)
 
