@@ -129,7 +129,7 @@ namespace Unreal
 class UObject;
 class UFunction;
 class UClass;
-class FUObjectItem;
+struct FUObjectItem;
 class FUObjectCreateListener;
 class FUObjectDeleteListener;
 
