@@ -98,3 +98,17 @@ module residency for avoiding a dangling vtable after `FreeLibrary`.
 - no game-specific UI, pause, or gameplay-state filtering.
 
 The Lua caller owns target selection, rebinding, and unbinding policy.
+
+## Helper layer boundary
+
+Version 0.3.0's `Helpers.OpenInput` layer is shipped in the bridge's embedded
+Lua API. It uses UE4SS object construction and ordinary reflected Enhanced
+Input calls to create transient mapping contexts, Input Actions, and Tap/Hold
+triggers. The ABI-pinned native backend remains responsible only for explicit
+component targets, native action-event bindings, queued event delivery, and
+safe detachment.
+
+Each helper binding uses a private mapping context. This keeps rollback and
+unbind ownership local to one handle and avoids editing an already-active
+shared context. Helper-created actions default to non-consuming input. The
+helper layer adds no discovery, hook, scan, polling loop, or game-state policy.

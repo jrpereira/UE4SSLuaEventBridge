@@ -1,4 +1,5 @@
 #include <UE4SSLuaEventBridge/EnhancedInputBackend.hpp>
+#include <UE4SSLuaEventBridge/EmbeddedLuaAPI.hpp>
 #include <UE4SSLuaEventBridge/SessionAliasIndex.hpp>
 #include <UE4SSLuaEventBridge/UE4SSABI.hpp>
 
@@ -98,7 +99,7 @@ public:
     UE4SSLuaEventBridgeMod()
     {
         ModName = L"UE4SSLuaEventBridge";
-        ModVersion = L"0.2.11";
+        ModVersion = L"0.3.0";
         ModDescription = L"Game-agnostic native Enhanced Input callbacks for UE4SS Lua mods";
         ModAuthors = L"UE4SS Lua Event Bridge contributors";
         ModIntendedSDKVersion = L"3.0.1-97b7e501";
@@ -171,177 +172,12 @@ public:
             std::string{"__UE4SSLuaEventBridge_SessionId = "} + std::to_string(session_ptr->id);
         lua.execute_string(session_script);
 
-        lua.execute_string(R"lua(
-            local __session = assert(__UE4SSLuaEventBridge_SessionId, "bridge session id is missing")
-            __UE4SSLuaEventBridge_SessionId = nil
-            local __callbacks = {}
-            local __bindings = {}
-            local __nextCallbackToken = 0
-
-            local function __UE4SSLuaEventBridge_Forget(handle)
-                local binding = __bindings[handle]
-                if binding ~= nil then
-                    __callbacks[binding.token] = nil
-                    __bindings[handle] = nil
-                end
-            end
-
-            local function __UE4SSLuaEventBridge_ForgetTarget(target)
-                local handles = {}
-                for handle, binding in pairs(__bindings) do
-                    if binding.target == target then
-                        handles[#handles + 1] = handle
-                    end
-                end
-                for _, handle in ipairs(handles) do
-                    __UE4SSLuaEventBridge_Forget(handle)
-                end
-            end
-
-            local function __UE4SSLuaEventBridge_ClearCallbacks()
-                __callbacks = {}
-                __bindings = {}
-            end
-
-            local function __UE4SSLuaEventBridge_Traceback(message)
-                if debug ~= nil and debug.traceback ~= nil then
-                    return debug.traceback(message, 2)
-                end
-                return tostring(message)
-            end
-
-            local function __UE4SSLuaEventBridge_Dispatch(
-                token, handle, sourceAction, phaseName, elapsed, triggered, x, y, z, valueType)
-                local callback = __callbacks[token]
-                if callback == nil then return end
-
-                local ok, callbackError = xpcall(callback, __UE4SSLuaEventBridge_Traceback, {
-                    subscription = handle,
-                    source_type = "enhanced_input",
-                    action = sourceAction,
-                    phase = phaseName,
-                    elapsed_processed = elapsed,
-                    elapsed_triggered = triggered,
-                    value = { x = x, y = y, z = z, type = valueType },
-                })
-                if not ok then
-                    __UE4SSLuaEventBridge_Forget(handle)
-                    error(callbackError, 0)
-                end
-            end
-
-            local function __UE4SSLuaEventBridge_PackPath(path)
-                assert(type(path) == "string", "object path must be a string")
-                assert(#path > 0 and #path <= 512, "object path must be 1..512 bytes")
-                local words = {}
-                for i = 1, 64 do words[i] = 0 end
-                for i = 1, #path do
-                    local word = ((i - 1) // 8) + 1
-                    local shift = ((i - 1) % 8) * 8
-                    words[word] = words[word] | (string.byte(path, i) << shift)
-                end
-                local args = { #path }
-                for i = 1, 64 do args[#args + 1] = words[i] end
-                return args
-            end
-
-            UE4SSLuaEventBridge = {
-                API_VERSION = 2,
-                GetVersion = UE4SSLuaEventBridge_GetVersion,
-                GetCapabilities = function()
-                    local api, enhancedInput, explicitTarget, target = UE4SSLuaEventBridge_GetCapabilities()
-                    return {
-                        api = api,
-                        enhanced_input = enhancedInput,
-                        explicit_target = explicitTarget,
-                        target_ue4ss_commit = target,
-                    }
-                end,
-                OpenInputComponent = function(componentPath)
-                    local packed = __UE4SSLuaEventBridge_PackPath(componentPath)
-                    local args = { __session }
-                    for i = 1, #packed do args[#args + 1] = packed[i] end
-                    return UE4SSLuaEventBridge_OpenInputComponent(table.unpack(args, 1, #args))
-                end,
-                CloseInputComponent = function(targetHandle)
-                    local closed = UE4SSLuaEventBridge_CloseInputComponent(__session, targetHandle)
-                    if closed then
-                        __UE4SSLuaEventBridge_ForgetTarget(targetHandle)
-                    end
-                    return closed
-                end,
-                BindAction = function(targetHandle, action, event, callback)
-                    assert(type(targetHandle) == "number", "targetHandle must come from OpenInputComponent")
-                    assert(type(action) == "string", "action must be an object path")
-                    assert(type(event) == "string", "event must be an ETriggerEvent name")
-                    assert(type(callback) == "function", "callback must be a function")
-
-                    local phases = {
-                        Triggered = 1,
-                        Started = 2,
-                        Ongoing = 3,
-                        Canceled = 4,
-                        Completed = 5,
-                    }
-                    local phase = phases[event]
-                    assert(phase ~= nil, "unsupported ETriggerEvent name")
-
-                    local packed = __UE4SSLuaEventBridge_PackPath(action)
-                    local args = { __session, targetHandle }
-                    for i = 1, #packed do args[#args + 1] = packed[i] end
-                    args[#args + 1] = phase
-
-                    __nextCallbackToken = __nextCallbackToken + 1
-                    local token = __nextCallbackToken
-                    __callbacks[token] = callback
-                    args[#args + 1] = token
-
-                    local handle, bindError =
-                        UE4SSLuaEventBridge_BindAction(table.unpack(args, 1, #args))
-                    if handle == nil then
-                        __callbacks[token] = nil
-                        return nil, bindError
-                    end
-                    __bindings[handle] = { token = token, target = targetHandle }
-                    return handle
-                end,
-                SubscribeEnhancedInput = function(spec, callback)
-                    assert(type(spec) == "table", "spec must be a table")
-                    assert(type(spec.target) == "number", "spec.target must come from OpenInputComponent")
-                    return UE4SSLuaEventBridge.BindAction(spec.target, spec.action, spec.event, callback)
-                end,
-                Unbind = function(handle)
-                    local removed = UE4SSLuaEventBridge_Unbind(__session, handle)
-                    if removed then
-                        __UE4SSLuaEventBridge_Forget(handle)
-                    end
-                    return removed
-                end,
-                Unsubscribe = function(handle)
-                    local removed = UE4SSLuaEventBridge_Unbind(__session, handle)
-                    if removed then
-                        __UE4SSLuaEventBridge_Forget(handle)
-                    end
-                    return removed
-                end,
-                UnbindAll = function()
-                    local count, completed = UE4SSLuaEventBridge_UnbindAll(__session)
-                    if completed then
-                        __UE4SSLuaEventBridge_ClearCallbacks()
-                    end
-                    return count
-                end,
-                UnsubscribeAll = function()
-                    local count, completed = UE4SSLuaEventBridge_UnbindAll(__session)
-                    if completed then
-                        __UE4SSLuaEventBridge_ClearCallbacks()
-                    end
-                    return count
-                end,
-            }
-
-            return __UE4SSLuaEventBridge_Dispatch
-        )lua");
+        std::string lua_api;
+        for (const auto chunk : UE4SSLuaEventBridge::embedded_lua_api_chunks)
+        {
+            lua_api.append(chunk);
+        }
+        lua.execute_string(lua_api);
 
         // The setup chunk returns one dispatcher closure. Keeping one registry
         // reference per Lua session avoids retaining one native registry entry
@@ -372,6 +208,17 @@ public:
 
         if (RC::Unreal::IsInGameThread())
         {
+            try
+            {
+                lua.execute_string(
+                    "if __UE4SSLuaEventBridge_CloseHelperScopes ~= nil then "
+                    "__UE4SSLuaEventBridge_CloseHelperScopes() end");
+            }
+            catch (...)
+            {
+                // The native fail-safe below still detaches every action
+                // binding if reflected helper cleanup cannot complete.
+            }
             backend_.unsubscribe_all(*session);
             session->active.store(false, std::memory_order_release);
         }
@@ -408,17 +255,21 @@ public:
 private:
     static int get_version(const Lua& lua)
     {
-        lua.set_string("0.2.11");
+        lua.set_string("0.3.0");
         return 1;
     }
 
     static int get_capabilities(const Lua& lua)
     {
-        lua.set_integer(2);
+        lua.set_integer(3);
         lua.set_bool(active_mod && active_mod->backend_.available());
         lua.set_bool(true);
+        lua.set_bool(true);
+        lua.set_bool(true);
+        lua.set_bool(true);
+        lua.set_bool(true);
         lua.set_string("97b7e501");
-        return 4;
+        return 8;
     }
 
     static std::pair<TriggerEvent, std::string_view> parse_phase(int64_t phase)
