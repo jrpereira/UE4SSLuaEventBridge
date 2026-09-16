@@ -41,7 +41,7 @@ public:
     UE4SSLuaEventBridgeMod()
     {
         ModName = L"UE4SSLuaEventBridge";
-        ModVersion = L"0.2.5";
+        ModVersion = L"0.2.6";
         ModDescription = L"Native Unreal event callbacks for UE4SS Lua mods";
         ModAuthors = L"UE4SS Lua Event Bridge contributors";
         ModIntendedSDKVersion = L"3.0.1-97b7e501";
@@ -198,7 +198,7 @@ public:
 private:
     static int get_version(const Lua& lua)
     {
-        lua.set_string("0.2.5");
+        lua.set_string("0.2.6");
         return 1;
     }
 
@@ -242,6 +242,9 @@ private:
             return 2;
         }
 
+        // LuaMadeSimple::Lua::get_integer removes the consumed stack slot.
+        // Therefore decode the packed arguments from the front of the stack;
+        // every subsequent argument shifts into index 1 after each read.
         const auto action_length = lua.get_integer(1);
         if (action_length <= 0 || action_length > packed_action_max_length)
         {
@@ -253,7 +256,7 @@ private:
         std::array<uint64_t, packed_action_word_count> words{};
         for (int32_t index = 0; index < packed_action_word_count; ++index)
         {
-            words[static_cast<std::size_t>(index)] = static_cast<uint64_t>(lua.get_integer(2 + index));
+            words[static_cast<std::size_t>(index)] = static_cast<uint64_t>(lua.get_integer(1));
         }
 
         std::string action_path(static_cast<std::size_t>(action_length), '\0');
@@ -271,7 +274,7 @@ private:
             action_path[static_cast<std::size_t>(index)] = static_cast<char>(byte);
         }
 
-        const auto [phase, phase_view] = parse_phase(lua.get_integer(packed_action_phase_index));
+        const auto [phase, phase_view] = parse_phase(lua.get_integer(1));
         if (phase == TriggerEvent::None)
         {
             lua.set_nil();
@@ -280,6 +283,8 @@ private:
         }
         const std::string phase_name(phase_view);
 
+        // The callback is now the sole remaining stack argument, so make_ref()
+        // stores exactly that function in the registry.
         const int32_t callback_ref = lua.registry().make_ref();
         const uint64_t handle = active_mod->backend_.subscribe(
             *session, callback_ref, std::move(action_path), phase_name, phase);
