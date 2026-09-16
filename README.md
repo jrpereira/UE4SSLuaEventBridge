@@ -81,6 +81,10 @@ hooking, background scans, polling, or game-specific state filtering.
 
 ## Installation layout
 
+Download the versioned ZIP and checksum from
+[GitHub Releases](https://github.com/jrpereira/UE4SSLuaEventBridge/releases).
+Extract the ZIP into the UE4SS `Mods` directory to produce:
+
 ```text
 Mods/
 └── UE4SSLuaEventBridge/
