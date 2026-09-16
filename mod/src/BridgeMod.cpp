@@ -172,7 +172,12 @@ public:
             std::string{"__UE4SSLuaEventBridge_SessionId = "} + std::to_string(session_ptr->id);
         lua.execute_string(session_script);
 
-        lua.execute_string(UE4SSLuaEventBridge::embedded_lua_api);
+        std::string lua_api;
+        for (const auto chunk : UE4SSLuaEventBridge::embedded_lua_api_chunks)
+        {
+            lua_api.append(chunk);
+        }
+        lua.execute_string(lua_api);
 
         // The setup chunk returns one dispatcher closure. Keeping one registry
         // reference per Lua session avoids retaining one native registry entry

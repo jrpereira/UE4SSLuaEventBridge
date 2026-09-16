@@ -6,18 +6,21 @@ build_dir="$(mktemp -d)"
 trap 'rm -rf "${build_dir}"' EXIT
 generated_dir="${build_dir}/generated/UE4SSLuaEventBridge"
 mkdir -p "${generated_dir}"
-awk '
-    BEGIN {
-        print "#pragma once"
-        print "namespace UE4SSLuaEventBridge {"
-        print "inline constexpr char embedded_lua_api[] = R\"UE4SSLEB_LUA("
-    }
-    { print }
-    END {
-        print ")UE4SSLEB_LUA\";"
-        print "}"
-    }
-' "${repo_root}/mod/lua/bridge_api.lua" > "${generated_dir}/EmbeddedLuaAPI.hpp"
+header="${generated_dir}/EmbeddedLuaAPI.hpp"
+printf '%s\n' \
+    '#pragma once' \
+    '#include <array>' \
+    '#include <string_view>' \
+    'namespace UE4SSLuaEventBridge {' \
+    'inline constexpr std::array<std::string_view, 3> embedded_lua_api_chunks{' \
+    > "${header}"
+for offset in 0 7000 14000; do
+    printf '%s' 'R"UE4SSLEB_LUA(' >> "${header}"
+    dd if="${repo_root}/mod/lua/bridge_api.lua" bs=1 skip="${offset}" count=7000 \
+        status=none >> "${header}"
+    printf '%s\n' ')UE4SSLEB_LUA",' >> "${header}"
+done
+printf '%s\n' '};' '}' >> "${header}"
 
 g++ \
     -std=c++20 \
