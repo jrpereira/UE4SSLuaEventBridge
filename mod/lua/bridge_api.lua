@@ -178,6 +178,11 @@ local __scopeStates = setmetatable({}, { __mode = "k" })
 local __inputScopes = {}
 local __classCache = {}
 
+local function __onGameThread(operation)
+    if UE4SSLuaEventBridge_IsInGameThread() then return true end
+    return false, operation .. " must run on the Unreal game thread"
+end
+
 local function __validObject(object)
     if object == nil then return false end
     local ok, valid = pcall(function() return object:IsValid() end)
@@ -277,6 +282,8 @@ function __scopeMethods:Bind(key, trigger, callback, options)
     local state = __scopeStates[self]
     assert(state ~= nil, "invalid input scope")
     if state.closed then return nil, "input scope is closed" end
+    local onGameThread, threadError = __onGameThread("input:Bind")
+    if not onGameThread then return nil, threadError end
     assert(type(key) == "string" and #key > 0, "key must be a non-empty Unreal key name")
     assert(trigger == __tap or trigger == __hold, "unsupported Helpers.Trigger constant")
     assert(type(callback) == "function", "callback must be a function")
@@ -394,6 +401,8 @@ function __scopeMethods:Unbind(handle)
     assert(state ~= nil, "invalid input scope")
     assert(type(handle) == "number", "handle must come from input:Bind")
     if state.closed then return false, "input scope is closed" end
+    local onGameThread, threadError = __onGameThread("input:Unbind")
+    if not onGameThread then return false, threadError end
 
     local record = state.bindings[handle]
     if record == nil then return false, "binding is not owned by this input scope" end
@@ -407,6 +416,8 @@ function __scopeMethods:Close()
     local state = __scopeStates[self]
     assert(state ~= nil, "invalid input scope")
     if state.closed then return true end
+    local onGameThread, threadError = __onGameThread("input:Close")
+    if not onGameThread then return false, threadError end
 
     local errors = {}
     local handles = {}
@@ -447,6 +458,8 @@ local Helpers = { Trigger = Trigger }
 
 function Helpers.OpenInput(options)
     assert(type(options) == "table", "OpenInput expects an options table")
+    local onGameThread, threadError = __onGameThread("Helpers.OpenInput")
+    if not onGameThread then return nil, threadError end
     assert(type(options.component_path) == "string" and #options.component_path > 0,
         "component_path must be an exact live UEnhancedInputComponent object path")
     assert(type(options.subsystem_path) == "string" and #options.subsystem_path > 0,

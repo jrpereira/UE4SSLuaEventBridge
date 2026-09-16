@@ -3,7 +3,7 @@
 `UE4SSLuaEventBridge` is a native UE4SS C++ mod that exposes native Unreal
 Enhanced Input action events to Lua through a small, explicit-target API.
 
-Version 0.3.0 targets UE4SS `3.0.1 Beta #0` at commit `97b7e501` and Unreal
+Version 0.3.1 targets UE4SS `3.0.1 Beta #0` at commit `97b7e501` and Unreal
 Engine 5.5 on Windows x64. The C++ and Unreal layouts are ABI-pinned; a build
 for a nearby UE4SS or engine revision is not assumed compatible.
 

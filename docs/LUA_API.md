@@ -16,7 +16,7 @@ local version = bridge.GetVersion()
 local capabilities = bridge.GetCapabilities()
 ```
 
-Version 0.3.0 reports API version 3:
+Version 0.3.1 reports API version 3:
 
 ```lua
 {
@@ -127,6 +127,9 @@ Unreal game thread because they resolve or mutate live Unreal objects. Calls
 from other threads fail without touching the native binding array. UE4SS
 `ExecuteInGameThread` child Lua states are supported and retain the owning Lua
 session ID.
+
+Helper calls perform an explicit native thread check before transient object
+construction or reflected mapping-context mutation.
 
 Callbacks are not invoked inside Unreal's input-dispatch stack. Native events
 are queued and delivered from the bridge's UE4SS update callback.
