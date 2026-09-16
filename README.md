@@ -1,47 +1,52 @@
 # UE4SS Lua Event Bridge
 
 `UE4SSLuaEventBridge` is a native UE4SS C++ mod that exposes native Unreal
-event sources to Lua mods through a small, capability-based API.
+Enhanced Input action events to Lua through a small, explicit-target API.
 
-The bridge is deliberately game-agnostic. Consumer mods identify event sources
-and provide callbacks; the bridge owns native bindings, Lua registry references,
-thread hand-off, and cleanup.
+Version 0.2.11 targets UE4SS `3.0.1 Beta #0` at commit `97b7e501` and Unreal
+Engine 5.5 on Windows x64. The C++ and Unreal layouts are ABI-pinned; a build
+for a nearby UE4SS or engine revision is not assumed compatible.
 
-## Current status
+## API
 
-Version `0.2.3` contains an ABI-pinned Enhanced Input backend and the Lua
-`BindAction` API. It inserts native action-event bindings into the active local
-player's `UEnhancedInputComponent`; Unreal remains responsible for evaluating
-input mappings and triggers. Native events are queued and delivered to the
-owning Lua state from UE4SS's normal update thread.
+```lua
+local target, openError =
+    UE4SSLuaEventBridge.OpenInputComponent(componentPath)
 
-Version 0.2.3 registers UE4SS's parent, main, async, and hook Lua threads as
-aliases of one owning session. A callback API call made from a mod's main Lua
-thread therefore resolves the same session created by `on_lua_start`.
+local handle, bindError = UE4SSLuaEventBridge.BindAction(
+    target,
+    actionPath,
+    "Triggered",
+    function(event)
+        print(event.action, event.phase, event.value.x)
+    end)
 
-Trigger-event names are converted to stable integer IDs in Lua before entering
-the native callback. This avoids a second C++ `std::string_view` return across
-the UE4SS DLL boundary, which is unsafe in the supported runtime build.
+UE4SSLuaEventBridge.Unbind(handle)
+UE4SSLuaEventBridge.CloseInputComponent(target)
+UE4SSLuaEventBridge.UnbindAll()
+```
 
-The backend has passed portable unit tests, a cross-platform C++ syntax audit,
-and export-name verification against the supplied UE4SS DLL. Release archives
-are built with MSVC by GitHub Actions against the ABI-pinned import definition.
+The caller supplies exact live object paths and owns bind/unbind/rebind policy.
+The bridge performs no controller discovery, UObject listening, `ProcessEvent`
+hooking, background scans, polling, or game-specific state filtering.
 
-## Design rules
+## Safety model
 
-- No game-specific actions, object paths, keys, or UI behavior.
-- One isolated session per Lua mod/state.
-- Opaque subscription handles rather than exposed native pointers.
-- Native bindings are created and removed on the Unreal game thread.
-- Lua callbacks execute on UE4SS's Lua-owning update thread, never from inside
-  Unreal's input-dispatch stack.
-- Lua callbacks are never retained after their Lua mod stops.
-- Native bindings are detached before their target object becomes invalid.
-- Backends advertise capabilities; unsupported event types fail explicitly.
-- The bridge automatically reattaches subscriptions after pawn or input-
-  component reconstruction.
+- Native binding-array access is restricted to the Unreal game thread.
+- Component and action lookup is exact-path only.
+- Component layout and array invariants are checked before mutation.
+- Weak object references use verified object index/serial semantics.
+- Native input execution only queues copied event data; it does not enter Lua.
+- Callback closures are released promptly on all public teardown paths and on
+  callback failure.
+- Off-thread Lua-stop deactivates callbacks without mutating Unreal arrays;
+  inactive bindings are reaped by the next game-thread bridge operation.
+- A process-lifetime DLL pin is used only if UE4SS unloads the bridge while
+  Unreal still owns a binding or clone, preventing a dangling native vtable.
+- Handles are isolated by Lua session, including calls made from UE4SS
+  `ExecuteInGameThread` child Lua states.
 
-## Layout after compilation
+## Installation layout
 
 ```text
 Mods/
@@ -54,15 +59,6 @@ Mods/
 ## Documentation
 
 - [`docs/LUA_API.md`](docs/LUA_API.md) — public Lua contract
-- [`docs/ENHANCED_INPUT_BACKEND.md`](docs/ENHANCED_INPUT_BACKEND.md) — native
-  adapter requirements and safety boundary
+- [`docs/ENHANCED_INPUT_BACKEND.md`](docs/ENHANCED_INPUT_BACKEND.md) — ABI,
+  ownership, and lifetime model
 - [`docs/BUILD.md`](docs/BUILD.md) — ABI-pinned build requirements
-
-## Compatibility target
-
-- Windows x64
-- UE4SS `3.0.1 Beta #0`, commit `97b7e501`
-- Unreal Engine `5.5`
-
-The C++ ABI must match the installed UE4SS build. A DLL built against a nearby
-experimental commit is not assumed compatible.

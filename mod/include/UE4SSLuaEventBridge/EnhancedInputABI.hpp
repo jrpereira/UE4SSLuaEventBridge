@@ -121,11 +121,22 @@ struct ActionEventBindingArray
 inline constexpr std::size_t input_component_size = 0x140;
 inline constexpr std::size_t enhanced_input_component_size = 0x178;
 inline constexpr std::size_t action_event_bindings_offset = 0x140;
+inline constexpr std::size_t uobject_class_offset = 0x10;
+inline constexpr std::size_t instance_source_action_offset = 0x00;
+inline constexpr std::size_t instance_trigger_event_offset = 0x13;
+inline constexpr std::size_t instance_value_x_offset = 0x38;
+inline constexpr std::size_t instance_value_y_offset = 0x40;
+inline constexpr std::size_t instance_value_z_offset = 0x48;
+inline constexpr std::size_t instance_value_type_offset = 0x50;
+inline constexpr std::size_t instance_elapsed_processed_offset = 0x58;
+inline constexpr std::size_t instance_elapsed_triggered_offset = 0x5C;
 
 static_assert(sizeof(FWeakObjectPtr) == 0x8);
 static_assert(sizeof(InputActionInstanceView) == 0x60);
+static_assert(sizeof(UniquePtr<ActionEventBinding>) == sizeof(void*));
 static_assert(sizeof(ActionEventBindingArray) == 0x10);
 static_assert(sizeof(InputBindingHandle) == 0x10);
+static_assert(instance_elapsed_triggered_offset + sizeof(float) == sizeof(InputActionInstanceView));
 #ifdef _MSC_VER
 static_assert(sizeof(ActionEventBinding) == 0x20);
 #endif

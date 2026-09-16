@@ -2,51 +2,99 @@
 
 ## Purpose
 
-Translate native Enhanced Input delegate invocations into owned Lua callback
-events. Enhanced Input remains responsible for trigger evaluation, including
-Tap and Hold timing.
+Translate native Enhanced Input action events into Lua callbacks without
+installing `ProcessEvent` hooks, UObject listeners, scans, or polling. Enhanced
+Input remains responsible for trigger evaluation and value generation.
 
-## Confirmed target layouts
+The backend is game-agnostic. A caller supplies both the exact live
+`UEnhancedInputComponent` object path and the exact `UInputAction` object path.
+The bridge does not discover player controllers or infer gameplay/UI state.
 
-The Dawnwalker UE 5.5 CXX dump confirms:
+## Pinned compatibility boundary
 
-| Type | Relevant data |
-|---|---|
-| `FInputActionInstance` | source action, trigger event, elapsed processed time, elapsed triggered time |
-| `FEnhancedActionKeyMapping` | action, key, trigger array, modifier array |
-| `UInputTriggerTap` | `TapReleaseTimeThreshold` |
-| `UInputTriggerHold` | `HoldTimeThreshold`, `bIsOneShot` |
-| `ETriggerEvent` | `Triggered=1`, `Started=2`, `Ongoing=4`, `Canceled=8`, `Completed=16` |
+The native adapter targets:
 
-## Native boundary
+- UE4SS `3.0.1 Beta #0`, commit `97b7e501`
+- Unreal Engine 5.5
+- Windows x64 with the MSVC ABI
+
+The verified UE 5.5 layout constants are:
+
+| Type or field | Pinned value |
+|---|---:|
+| `UInputComponent` size | `0x140` |
+| `UEnhancedInputComponent` size | `0x178` |
+| action-event binding array offset | `0x140` |
+| `UObject::ClassPrivate` offset | `0x10` |
+| `FInputActionInstance` size | `0x60` |
+| `FEnhancedInputActionEventBinding` size | `0x20` |
+
+The required UE 5.5 virtual order after the virtual destructor is:
+
+1. `Execute`
+2. `Clone`
+3. `SetShouldFireWithEditorScriptGuard`
+4. `IsBoundToObject`
+5. `GetUObject`
+
+Declaration order is ABI-significant. Compile-time size checks cover the local
+weak pointer, binding base, action-event binding, instance view, unique-pointer
+return wrapper, and array view.
+
+## Native binding route
 
 `UEnhancedInputComponent::BindAction` is a template/non-reflected C++ API, so
-there is no exported function to call. The bridge uses the equivalent manual
-binding route documented by Enhanced Input: it appends a polymorphic
-`FEnhancedInputActionEventBinding` to the component's native action-event array.
+the bridge appends an owned polymorphic binding to the component's native
+action-event array. Before reading or mutating that array it verifies:
 
-The component size (`0x178`), action-event array offset (`0x140`),
-`FInputActionInstance` size/fields, binding layout and virtual interface are
-fixed for the Dawnwalker UE 5.5 target. Before touching the array, the backend
-validates the live component's reflected size and array invariants. A mismatch
-causes the attachment to fail closed.
+- the component still resolves through its weak object reference;
+- the component's reflected size is exactly the pinned UE 5.5 size;
+- array size/capacity invariants;
+- a non-null, pointer-aligned allocation when capacity is non-zero; and
+- a bounded capacity before growth.
 
-## Binding lifecycle
+A mismatch fails closed. All public operations that touch the component or
+action require Unreal's game thread.
 
-1. Resolve the requested `UInputAction`.
-2. Resolve the active player controller's acknowledged pawn and its
-   `UEnhancedInputComponent`, with the controller component as fallback.
-3. Validate both objects immediately before binding.
-4. Append the requested `ETriggerEvent` binding on the Unreal game thread.
-5. Store the binding handle alongside the bridge subscription.
-6. Queue the event and invoke the owning Lua state from UE4SS's update thread;
-   never re-enter Lua inside Unreal's input dispatcher.
-7. Detach on unsubscribe, Lua stop, input-component replacement, or shutdown.
-8. Re-resolve and rebind after possession/world reconstruction.
+The pinned UE4SS build's imported `FWeakObjectPtr(UObject*)` construction path
+is deliberately not used. The bridge creates and resolves the equivalent
+index/serial pair locally using the verified object-array offsets.
 
-## Tap and Hold
+## Ownership and event delivery
 
-The bridge does not calculate elapsed wall-clock time. A consumer supplies or
-selects an Input Action whose triggers are `UInputTriggerTap` or
-`UInputTriggerHold`; the bridge forwards the resulting native trigger event.
-This avoids duplicating Enhanced Input's state machine in Lua or C++.
+1. `OpenInputComponent` resolves the exact supplied component once and stores a
+   weak reference behind a session-owned target handle.
+2. `BindAction` resolves the exact supplied action, attaches the native binding,
+   and stores a shared subscription record.
+3. Native `Execute` copies the event value into a bridge-owned queue. It never
+   re-enters Lua.
+4. `on_update` drains the queue and invokes one dispatcher closure in the
+   owning Lua state.
+5. The dispatcher looks up the individual callback in Lua-owned tables.
+6. Unbind, target close, and unbind-all deactivate the subscription before
+   detaching its native binding on the game thread.
+7. Callback failure and off-thread Lua-stop deactivate immediately; the next
+   game-thread bridge operation detaches the inactive binding.
+
+Queued events retain the shared subscription record, but an inactive record is
+discarded before its Lua session is dereferenced. If Unreal has already
+destroyed a component, weak resolution fails and detach avoids dereferencing
+the stale native binding pointer.
+
+Native bindings and any engine-created clones share a dispatch state rather
+than retaining a raw backend pointer. The state rejects new events during
+shutdown and counts live polymorphic binding objects. If UE4SS unloads the C++
+mod off-thread while any such object remains under Unreal ownership, the DLL
+adds a process-lifetime module reference. This intentionally trades a bounded
+module residency for avoiding a dangling vtable after `FreeLibrary`.
+
+## Deliberate exclusions
+
+- no player-controller or pawn discovery;
+- no UObject create/delete listener;
+- no `ProcessEvent` hook;
+- no background component scanning or polling;
+- no automatic rebinding after component replacement; and
+- no game-specific UI, pause, or gameplay-state filtering.
+
+The Lua caller owns target selection, rebinding, and unbinding policy.
