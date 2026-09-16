@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(UE4SSLuaEventBridge VERSION 0.3.1 LANGUAGES CXX)
+project(UE4SSLuaEventBridge VERSION 0.3.2 LANGUAGES CXX)
 
 option(UE4SSLEB_BUILD_TESTS "Build portable unit tests" ON)
 
@@ -64,8 +64,10 @@ endif()
 
 if(UE4SSLEB_BUILD_TESTS)
     enable_testing()
+    find_package(Threads REQUIRED)
     add_executable(EventRegistryTests mod/src/EventRegistry.cpp tests/EventRegistryTests.cpp)
     target_compile_features(EventRegistryTests PRIVATE cxx_std_20)
     target_include_directories(EventRegistryTests PRIVATE mod/include)
+    target_link_libraries(EventRegistryTests PRIVATE Threads::Threads)
     add_test(NAME EventRegistryTests COMMAND EventRegistryTests)
 endif()

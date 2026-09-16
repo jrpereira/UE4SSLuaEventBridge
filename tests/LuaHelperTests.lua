@@ -75,7 +75,7 @@ function FName(value) return { value = value } end
 
 __UE4SSLuaEventBridge_SessionId = 17
 
-function UE4SSLuaEventBridge_GetVersion() return "0.3.1" end
+function UE4SSLuaEventBridge_GetVersion() return "0.3.2" end
 function UE4SSLuaEventBridge_GetCapabilities()
     return 3, true, true, true, true, true, true, "97b7e501"
 end

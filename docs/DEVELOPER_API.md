@@ -1,6 +1,6 @@
 # Developer API: primitives and helpers
 
-UE4SSLuaEventBridge 0.3.1 exposes two API layers:
+UE4SSLuaEventBridge 0.3.2 exposes two API layers:
 
 | Layer | Use it when | Ownership |
 |---|---|---|
@@ -13,7 +13,7 @@ component, or subsystem.
 
 ## Requirements and execution model
 
-Version 0.3.1 targets:
+Version 0.3.2 targets:
 
 - UE4SS 3.0.1 Beta #0 at commit `97b7e501`;
 - Unreal Engine 5.5; and
@@ -48,7 +48,7 @@ local version = UE4SSLuaEventBridge.GetVersion()
 local capabilities = UE4SSLuaEventBridge.GetCapabilities()
 ```
 
-Version 0.3.1 reports:
+Version 0.3.2 reports:
 
 ```lua
 {
@@ -337,7 +337,9 @@ The following invariants apply:
 - generated objects remain referenced while their contexts or bindings are
   owned by the scope;
 - one scope never removes another scope's mapping context;
-- callbacks receive copied values outside Unreal's input-dispatch stack; and
+- callbacks receive copied values outside Unreal's input-dispatch stack;
+- session and child-state alias lookup is synchronized across UE4SS and game
+  threads, with stopped session storage retained until bridge destruction; and
 - the DLL is conservatively retained if Unreal may still own a native binding
   vtable during bridge unload.
 
