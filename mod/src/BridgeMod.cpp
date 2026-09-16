@@ -41,7 +41,7 @@ public:
     UE4SSLuaEventBridgeMod()
     {
         ModName = L"UE4SSLuaEventBridge";
-        ModVersion = L"0.2.6";
+        ModVersion = L"0.2.7";
         ModDescription = L"Native Unreal event callbacks for UE4SS Lua mods";
         ModAuthors = L"UE4SS Lua Event Bridge contributors";
         ModIntendedSDKVersion = L"3.0.1-97b7e501";
@@ -198,7 +198,7 @@ public:
 private:
     static int get_version(const Lua& lua)
     {
-        lua.set_string("0.2.6");
+        lua.set_string("0.2.7");
         return 1;
     }
 
