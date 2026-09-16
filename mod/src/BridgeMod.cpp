@@ -29,7 +29,8 @@ using UE4SSLuaEventBridge::EnhancedInputABI::TriggerEvent;
 
 constexpr int32_t packed_path_word_count = 64;
 constexpr int32_t packed_path_max_length = packed_path_word_count * 8;
-constexpr int32_t bind_callback_index = packed_path_word_count + 4; // target + length + words + phase + callback
+constexpr int32_t bind_callback_index =
+    packed_path_word_count + 5; // session + target + length + words + phase + callback
 
 class UE4SSLuaEventBridgeMod;
 UE4SSLuaEventBridgeMod* active_mod{};
@@ -71,7 +72,7 @@ public:
     UE4SSLuaEventBridgeMod()
     {
         ModName = L"UE4SSLuaEventBridge";
-        ModVersion = L"0.2.8";
+        ModVersion = L"0.2.9";
         ModDescription = L"Game-agnostic native Enhanced Input callbacks for UE4SS Lua mods";
         ModAuthors = L"UE4SS Lua Event Bridge contributors";
         ModIntendedSDKVersion = L"3.0.1-97b7e501";
@@ -143,7 +144,15 @@ public:
         lua.register_function("UE4SSLuaEventBridge_BindAction", &bind_action);
         lua.register_function("UE4SSLuaEventBridge_Unbind", &unbind);
         lua.register_function("UE4SSLuaEventBridge_UnbindAll", &unbind_all);
+
+        const auto session_script =
+            std::string{"__UE4SSLuaEventBridge_SessionId = "} + std::to_string(session_ptr->id);
+        lua.execute_string(session_script);
+
         lua.execute_string(R"lua(
+            local __session = assert(__UE4SSLuaEventBridge_SessionId, "bridge session id is missing")
+            __UE4SSLuaEventBridge_SessionId = nil
+
             local function __UE4SSLuaEventBridge_PackPath(path)
                 assert(type(path) == "string", "object path must be a string")
                 assert(#path > 0 and #path <= 512, "object path must be 1..512 bytes")
@@ -172,10 +181,14 @@ public:
                     }
                 end,
                 OpenInputComponent = function(componentPath)
-                    local args = __UE4SSLuaEventBridge_PackPath(componentPath)
+                    local packed = __UE4SSLuaEventBridge_PackPath(componentPath)
+                    local args = { __session }
+                    for i = 1, #packed do args[#args + 1] = packed[i] end
                     return UE4SSLuaEventBridge_OpenInputComponent(table.unpack(args, 1, #args))
                 end,
-                CloseInputComponent = UE4SSLuaEventBridge_CloseInputComponent,
+                CloseInputComponent = function(targetHandle)
+                    return UE4SSLuaEventBridge_CloseInputComponent(__session, targetHandle)
+                end,
                 BindAction = function(targetHandle, action, event, callback)
                     assert(type(targetHandle) == "number", "targetHandle must come from OpenInputComponent")
                     assert(type(action) == "string", "action must be an object path")
@@ -192,7 +205,7 @@ public:
                     assert(phase ~= nil, "unsupported ETriggerEvent name")
 
                     local packed = __UE4SSLuaEventBridge_PackPath(action)
-                    local args = { targetHandle }
+                    local args = { __session, targetHandle }
                     for i = 1, #packed do args[#args + 1] = packed[i] end
                     args[#args + 1] = phase
                     args[#args + 1] = function(handle, sourceAction, phaseName, elapsed, triggered, x, y, z, valueType)
@@ -213,10 +226,18 @@ public:
                     assert(type(spec.target) == "number", "spec.target must come from OpenInputComponent")
                     return UE4SSLuaEventBridge.BindAction(spec.target, spec.action, spec.event, callback)
                 end,
-                Unbind = UE4SSLuaEventBridge_Unbind,
-                Unsubscribe = UE4SSLuaEventBridge_Unbind,
-                UnbindAll = UE4SSLuaEventBridge_UnbindAll,
-                UnsubscribeAll = UE4SSLuaEventBridge_UnbindAll,
+                Unbind = function(handle)
+                    return UE4SSLuaEventBridge_Unbind(__session, handle)
+                end,
+                Unsubscribe = function(handle)
+                    return UE4SSLuaEventBridge_Unbind(__session, handle)
+                end,
+                UnbindAll = function()
+                    return UE4SSLuaEventBridge_UnbindAll(__session)
+                end,
+                UnsubscribeAll = function()
+                    return UE4SSLuaEventBridge_UnbindAll(__session)
+                end,
             }
         )lua");
     }
@@ -241,10 +262,20 @@ public:
         return session_index_.find(lua.get_lua_state());
     }
 
+    UE4SSLuaEventBridge::LuaSession* session_for_id(uint64_t id)
+    {
+        const auto found = sessions_.find(id);
+        if (found == sessions_.end() || !found->second || !found->second->active.load())
+        {
+            return nullptr;
+        }
+        return found->second.get();
+    }
+
 private:
     static int get_version(const Lua& lua)
     {
-        lua.set_string("0.2.8");
+        lua.set_string("0.2.9");
         return 1;
     }
 
@@ -267,6 +298,16 @@ private:
         return {TriggerEvent::None, {}};
     }
 
+    static UE4SSLuaEventBridge::LuaSession* consume_session(const Lua& lua)
+    {
+        if (!active_mod)
+        {
+            return nullptr;
+        }
+        const auto id = static_cast<uint64_t>(lua.get_integer(1));
+        return active_mod->session_for_id(id);
+    }
+
     static int open_input_component(const Lua& lua)
     {
         if (!active_mod || !active_mod->backend_.available())
@@ -275,7 +316,7 @@ private:
             lua.set_string("Enhanced Input backend is not initialized");
             return 2;
         }
-        auto* session = active_mod->session_for(lua);
+        auto* session = consume_session(lua);
         if (!session)
         {
             lua.set_nil();
@@ -305,7 +346,7 @@ private:
 
     static int close_input_component(const Lua& lua)
     {
-        auto* session = active_mod ? active_mod->session_for(lua) : nullptr;
+        auto* session = consume_session(lua);
         const auto handle = static_cast<uint64_t>(lua.get_integer(1));
         lua.set_bool(session && active_mod->backend_.close_target(*session, handle));
         return 1;
@@ -319,17 +360,18 @@ private:
             lua.set_string("Enhanced Input backend is not initialized");
             return 2;
         }
-        auto* session = active_mod->session_for(lua);
-        if (!session)
-        {
-            lua.set_nil();
-            lua.set_string("Lua session is not registered");
-            return 2;
-        }
         if (!lua.is_function(bind_callback_index))
         {
             lua.set_nil();
             lua.set_string("callback must be a function");
+            return 2;
+        }
+
+        auto* session = consume_session(lua);
+        if (!session)
+        {
+            lua.set_nil();
+            lua.set_string("Lua session is not registered");
             return 2;
         }
 
@@ -352,8 +394,8 @@ private:
         }
         const std::string phase_name(phase_view);
 
-        // After consuming target, packed path and phase, the callback is the
-        // sole remaining stack argument.
+        // After consuming session, target, packed path and phase, the callback
+        // is the sole remaining stack argument.
         const int32_t callback_ref = lua.registry().make_ref();
         auto [handle, backend_error] = active_mod->backend_.subscribe(
             *session, target, callback_ref, std::move(action_path), phase_name, phase);
@@ -369,7 +411,7 @@ private:
 
     static int unbind(const Lua& lua)
     {
-        auto* session = active_mod ? active_mod->session_for(lua) : nullptr;
+        auto* session = consume_session(lua);
         const auto handle = static_cast<uint64_t>(lua.get_integer(1));
         lua.set_bool(session && active_mod->backend_.unsubscribe(*session, handle));
         return 1;
@@ -377,7 +419,7 @@ private:
 
     static int unbind_all(const Lua& lua)
     {
-        auto* session = active_mod ? active_mod->session_for(lua) : nullptr;
+        auto* session = consume_session(lua);
         lua.set_integer(session ? static_cast<int64_t>(active_mod->backend_.unsubscribe_all(*session)) : 0);
         return 1;
     }
