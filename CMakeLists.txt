@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(UE4SSLuaEventBridge VERSION 0.2.10 LANGUAGES CXX)
+project(UE4SSLuaEventBridge VERSION 0.2.11 LANGUAGES CXX)
 
 option(UE4SSLEB_BUILD_TESTS "Build portable unit tests" ON)
 
@@ -27,7 +27,7 @@ if(WIN32)
     add_dependencies(UE4SSLuaEventBridge UE4SSImportLibrary)
     target_compile_features(UE4SSLuaEventBridge PRIVATE cxx_std_20)
     target_include_directories(UE4SSLuaEventBridge PRIVATE mod/include)
-    target_link_libraries(UE4SSLuaEventBridge PRIVATE "${UE4SS_IMPORT_LIB}")
+    target_link_libraries(UE4SSLuaEventBridge PRIVATE "${UE4SS_IMPORT_LIB}" kernel32)
     target_compile_options(UE4SSLuaEventBridge PRIVATE /W4 /WX /GR- /permissive-)
     set_property(TARGET UE4SSLuaEventBridge PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
     set_target_properties(UE4SSLuaEventBridge PROPERTIES

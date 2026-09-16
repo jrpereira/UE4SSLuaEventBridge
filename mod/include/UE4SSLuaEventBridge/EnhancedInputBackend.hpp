@@ -10,6 +10,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -29,12 +30,21 @@ struct EnhancedInputEvent
     EnhancedInputABI::ValueType value_type{EnhancedInputABI::ValueType::Boolean};
 };
 
+struct EnhancedInputDispatchState
+{
+    std::atomic_bool accepting{false};
+    std::atomic_bool clone_created{false};
+    std::atomic_uint64_t live_bindings{0};
+    std::mutex mutex;
+    std::vector<EnhancedInputEvent> events;
+};
+
 struct EnhancedInputSubscription
 {
     uint64_t id{};
     uint64_t target{};
     LuaSession* session{};
-    int32_t callback_ref{};
+    uint64_t callback_token{};
     std::string action_path_utf8;
     std::string phase_name;
     EnhancedInputABI::TriggerEvent phase{EnhancedInputABI::TriggerEvent::None};
@@ -51,7 +61,9 @@ public:
     EnhancedInputBackend& operator=(const EnhancedInputBackend&) = delete;
 
     void initialize();
-    void shutdown();
+    // Returns false when Unreal still owns one or more native binding objects.
+    // In that case the containing DLL must remain loaded until process exit.
+    [[nodiscard]] bool shutdown();
     [[nodiscard]] bool available() const { return initialized_.load(); }
 
     // Explicit-target API. The caller owns lifecycle policy: it decides when
@@ -62,17 +74,16 @@ public:
     std::pair<uint64_t, std::string> subscribe(
         LuaSession& session,
         uint64_t target,
-        int32_t callback_ref,
+        uint64_t callback_token,
         std::string action_path,
         std::string phase_name,
         EnhancedInputABI::TriggerEvent phase);
     bool unsubscribe(LuaSession& session, uint64_t id);
     std::size_t unsubscribe_all(LuaSession& session);
+    void deactivate(LuaSession& session, uint64_t id);
+    void deactivate_all(LuaSession& session);
 
     std::vector<EnhancedInputEvent> take_events();
-    void enqueue(
-        const std::shared_ptr<EnhancedInputSubscription>& owner,
-        const EnhancedInputABI::InputActionInstanceView& instance);
 
 private:
     class NativeBinding;
@@ -98,6 +109,7 @@ private:
         RC::Unreal::UObject* action,
         const std::shared_ptr<EnhancedInputSubscription>& subscription);
     void detach(LiveBinding& binding);
+    void collect_inactive_locked();
     bool unsubscribe_locked(LuaSession& session, uint64_t id);
 
     std::atomic_bool initialized_{false};
@@ -105,11 +117,12 @@ private:
     std::atomic_uint64_t next_subscription_{1};
     std::atomic_uint32_t next_binding_handle_{0x80000000u};
 
+    std::shared_ptr<EnhancedInputDispatchState> dispatch_state_;
     mutable std::mutex mutex_;
     std::unordered_map<uint64_t, Target> targets_;
     std::unordered_map<uint64_t, std::shared_ptr<EnhancedInputSubscription>> subscriptions_;
+    std::unordered_set<LuaSession*> inactive_sessions_;
     std::vector<LiveBinding> bindings_;
-    std::vector<EnhancedInputEvent> events_;
 };
 }
 
