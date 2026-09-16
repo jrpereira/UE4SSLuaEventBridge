@@ -10,7 +10,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y lua5.4
       - run: bash tests/run-portable-tests.sh
+      - run: bash tests/run-lua-tests.sh
       - run: bash tests/run-abi-syntax-test.sh
 
   windows-dll:
@@ -26,8 +28,8 @@ jobs:
         run: cmake --build build --config Release
       - name: Package
         shell: pwsh
-        run: Compress-Archive -Path build/dist/UE4SSLuaEventBridge -DestinationPath UE4SSLuaEventBridge-v0.2.11.zip
+        run: Compress-Archive -Path build/dist/UE4SSLuaEventBridge -DestinationPath UE4SSLuaEventBridge-v0.3.0.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: UE4SSLuaEventBridge-v0.2.11
-          path: UE4SSLuaEventBridge-v0.2.11.zip
+          name: UE4SSLuaEventBridge-v0.3.0
+          path: UE4SSLuaEventBridge-v0.3.0.zip

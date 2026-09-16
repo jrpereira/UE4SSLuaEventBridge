@@ -3,11 +3,41 @@
 `UE4SSLuaEventBridge` is a native UE4SS C++ mod that exposes native Unreal
 Enhanced Input action events to Lua through a small, explicit-target API.
 
-Version 0.2.11 targets UE4SS `3.0.1 Beta #0` at commit `97b7e501` and Unreal
+Version 0.3.0 targets UE4SS `3.0.1 Beta #0` at commit `97b7e501` and Unreal
 Engine 5.5 on Windows x64. The C++ and Unreal layouts are ABI-pinned; a build
 for a nearby UE4SS or engine revision is not assumed compatible.
 
-## API
+## Helper API
+
+The helper layer creates private transient Input Actions, triggers, and mapping
+contexts. The caller still supplies exact live component and subsystem paths.
+
+```lua
+local Helpers = UE4SSLuaEventBridge.Helpers
+local Trigger = Helpers.Trigger
+
+local input, openError = Helpers.OpenInput({
+    component_path = componentPath,
+    subsystem_path = enhancedInputSubsystemPath,
+})
+
+local tapHandle, tapError = input:Bind("F10", Trigger.Tap, function()
+    print("F10 tapped\n")
+end)
+
+local holdHandle, holdError = input:Bind("F10", Trigger.Hold, function(event)
+    print(string.format("F10 held for %.0f ms\n",
+        event.elapsed_processed * 1000))
+end, { threshold_seconds = 0.5, one_shot = true })
+
+input:Unbind(tapHandle)
+input:Close()
+```
+
+Tap/Hold classification and elapsed time come from Unreal Enhanced Input; the
+helper does not implement Lua timers or a key-state machine.
+
+## Primitive API
 
 ```lua
 local target, openError =
@@ -59,6 +89,10 @@ Mods/
 ## Documentation
 
 - [`docs/LUA_API.md`](docs/LUA_API.md) — public Lua contract
+- [`docs/DEVELOPER_API.md`](docs/DEVELOPER_API.md) — low-level primitives and
+  `OpenInput` helper contract
 - [`docs/ENHANCED_INPUT_BACKEND.md`](docs/ENHANCED_INPUT_BACKEND.md) — ABI,
   ownership, and lifetime model
 - [`docs/BUILD.md`](docs/BUILD.md) — ABI-pinned build requirements
+- [`examples/EnhancedInputTapHold`](examples/EnhancedInputTapHold) — complete
+  game-agnostic F10 Tap/Hold sample mod
