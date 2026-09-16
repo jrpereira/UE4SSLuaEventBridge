@@ -6,8 +6,7 @@ EXPORTS
     ??1FUObjectCreateListener@Unreal@RC@@UEAA@XZ
     ??0FUObjectDeleteListener@Unreal@RC@@QEAA@XZ
     ??1FUObjectDeleteListener@Unreal@RC@@UEAA@XZ
-    ??0FWeakObjectPtr@Unreal@RC@@QEAA@PEBVUObject@12@@Z
-    ?Get@FWeakObjectPtr@Unreal@RC@@QEBAPEAVUObject@23@XZ
+    ?IndexToObject@FUObjectArray@Unreal@RC@@SAPEAUFUObjectItem@23@H@Z
     ?AddUObjectCreateListener@FUObjectArray@Unreal@RC@@SAXPEAVFUObjectCreateListener@23@@Z
     ?AddUObjectDeleteListener@FUObjectArray@Unreal@RC@@SAXPEAVFUObjectDeleteListener@23@@Z
     ?RemoveUObjectCreateListener@FUObjectArray@Unreal@RC@@SAXPEAVFUObjectCreateListener@23@@Z
