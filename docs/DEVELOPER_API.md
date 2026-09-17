@@ -1,6 +1,6 @@
 # Developer API: primitives and helpers
 
-UE4SSLuaEventBridge 0.3.2 exposes two API layers:
+UE4SSLuaEventBridge 0.3.3 exposes two API layers:
 
 | Layer | Use it when | Ownership |
 |---|---|---|
@@ -13,7 +13,7 @@ component, or subsystem.
 
 ## Requirements and execution model
 
-Version 0.3.2 targets:
+Version 0.3.3 targets:
 
 - UE4SS 3.0.1 Beta #0 at commit `97b7e501`;
 - Unreal Engine 5.5; and
@@ -48,17 +48,19 @@ local version = UE4SSLuaEventBridge.GetVersion()
 local capabilities = UE4SSLuaEventBridge.GetCapabilities()
 ```
 
-Version 0.3.2 reports:
+Version 0.3.3 reports:
 
 ```lua
 {
-    api = 3,
+    api = 4,
     enhanced_input = true,
     explicit_target = true,
     helpers = true,
     dynamic_input = true,
     trigger_tap = true,
     trigger_hold = true,
+    detailed_errors = true,
+    debug_tracing = true,
     target_ue4ss_commit = "97b7e501",
 }
 ```
@@ -107,6 +109,7 @@ Supported event names are `Started`, `Ongoing`, `Triggered`, `Canceled`, and
     source_type = "enhanced_input",
     action = "/Game/Input/IA_Example.IA_Example",
     phase = "Triggered",
+    sequence = 27,
     elapsed_processed = 0.501,
     elapsed_triggered = 0.0,
     value = { x = 1.0, y = 0.0, z = 0.0, type = 0 },
@@ -120,31 +123,35 @@ bridge does not measure time itself.
 ### `Unbind(handle)`
 
 ```lua
-local removed = UE4SSLuaEventBridge.Unbind(handle)
+local removed, err = UE4SSLuaEventBridge.Unbind(handle)
 ```
 
 Deactivates the callback and removes its native action-event binding. It
 returns `true` when the calling session owns the handle and removal completes.
+On failure it returns `false, errorMessage`.
 
 ### `CloseInputComponent(target)`
 
 ```lua
-local closed = UE4SSLuaEventBridge.CloseInputComponent(target)
+local closed, err = UE4SSLuaEventBridge.CloseInputComponent(target)
 ```
 
 Unbinds subscriptions attached through the target and releases the target
 handle. It never destroys the Unreal component.
+On failure it returns `false, errorMessage`.
 
 ### `UnbindAll()`
 
 ```lua
-local count = UE4SSLuaEventBridge.UnbindAll()
+local count, completed, err = UE4SSLuaEventBridge.UnbindAll()
 ```
 
 Attempts to close all helper scopes in the current Lua session, then removes
 any remaining native subscriptions. It returns the number of native
-subscriptions removed. Prefer each helper scope's `Close()` method because it
-can report reflected mapping-context cleanup errors.
+subscriptions removed. `completed` is `true` only when helper and native
+cleanup both complete. On failure the third result contains the combined
+cleanup errors. Prefer each helper scope's `Close()` method when its lifetime
+is known.
 
 The compatibility aliases `SubscribeEnhancedInput`, `Unsubscribe`, and
 `UnsubscribeAll` remain available.
@@ -170,6 +177,8 @@ local input, err = Helpers.OpenInput({
     component_path = COMPONENT_PATH,
     subsystem_path = ENHANCED_INPUT_SUBSYSTEM_PATH,
     mapping_priority = 0,
+    debug = false,
+    debug_label = "MyMod",
 })
 ```
 
@@ -181,9 +190,11 @@ Required options:
   `UEnhancedInputLocalPlayerSubsystem` that receives private mapping contexts.
 
 `mapping_priority` is an optional signed 32-bit context priority and defaults
-to `0`. `OpenInput` performs no discovery. It resolves both supplied objects
-and returns an input scope, or `nil, errorMessage`. It does not install a
-mapping until `Bind` succeeds.
+to `0`. `debug` is an optional boolean and defaults to `false`.
+`debug_label` is an optional 1..64 byte label and defaults to `"input"`.
+`OpenInput` performs no discovery. It resolves both supplied objects and
+returns an input scope, or `nil, errorMessage`. It does not install a mapping
+until `Bind` succeeds.
 
 ### `input:Bind(key, trigger, callback [, options])`
 
@@ -242,12 +253,72 @@ The helper callback contains the primitive event payload plus:
 {
     key = "F10",
     trigger = Trigger.Hold,
+    scope_id = 1,
+    binding_id = 2,
 }
 ```
 
 The `action` field is the transient generated action path. It is an
 implementation detail and is not stable across sessions; use `key` and
 `trigger` instead.
+
+## Optional debug tracing
+
+Enable tracing on one helper scope when an Enhanced Input callback appears to
+be missing:
+
+```lua
+local input, err = Helpers.OpenInput({
+    component_path = COMPONENT_PATH,
+    subsystem_path = ENHANCED_INPUT_SUBSYSTEM_PATH,
+    mapping_priority = 10000,
+    debug = true,
+    debug_label = "ExtendedControls",
+})
+```
+
+Debug mode installs internal `Started`, `Completed`, and `Canceled` observers
+in addition to the normal `Triggered` subscription. These observers only
+report Enhanced Input phases; they never invoke the developer callback or
+classify Tap versus Hold. `Ongoing` is intentionally omitted because it can
+produce a trace line every input-processing frame.
+
+Each trace is written through UE4SS's normal log output in this form:
+
+```text
+[UE4SSLuaEventBridge][trace] label="ExtendedControls" stage="event_queued" scope=1 binding=2 key="F10" trigger="Hold" phase="Triggered" event_seq=17 thread_id=1248 game_thread=true reason="-"
+```
+
+Scope and binding IDs are monotonic and stable within one Lua session. Event
+sequences are assigned atomically when a native delegate is entered. Lifecycle
+records that do not belong to an input event use `event_seq=0`. Empty fields
+are rendered as `"-"`.
+
+| Stage | Meaning |
+|---|---|
+| `scope_opened` | `OpenInput` completed |
+| `binding_created` | The primary native `Triggered` binding was attached |
+| `enhanced_input_event` | Unreal emitted one of the observed action phases |
+| `native_delegate_entered` | The bridge's native action delegate began |
+| `event_queued` | A copied event was accepted for later Lua delivery |
+| `event_rejected` | Delivery was refused; inspect `reason` |
+| `event_dequeued` | The UE4SS update callback removed the event from the queue |
+| `lua_callback_started` | The bridge began its protected Lua dispatcher call |
+| `lua_callback_completed` | The Lua dispatcher returned successfully |
+| `lua_callback_failed` | The Lua dispatcher raised an error |
+| `callback_skipped` | A dequeued event no longer had an active binding or session |
+| `binding_removed` | The primary native binding was detached |
+| `scope_closed` | Helper mappings, subscriptions, and target were closed |
+
+Possible reasons include `binding_inactive`, `dispatch_stopped`,
+`queue_exception`, `lua_session_inactive`, and `unknown_lua_exception`.
+Recognized Lua exceptions include their error text in `reason`. Every line also
+records the current OS thread ID and whether UE4SS reports that thread as the
+Unreal game thread.
+
+Tracing begins at the generated Enhanced Input action. It does not detect or
+report raw physical-key input, controller routing, gameplay state, or UI state.
+Those belong to the consuming mod or a separate diagnostic layer.
 
 ### `input:Unbind(handle)`
 
@@ -322,8 +393,14 @@ entry point.
 
 ## Failure and lifetime behavior
 
-Argument-contract violations raise Lua errors. Runtime failures return
-`nil, errorMessage` or `false, errorMessage`.
+Primitive argument and runtime failures return descriptive error values:
+
+- value-producing primitives return `nil, errorMessage`;
+- boolean teardown primitives return `false, errorMessage`; and
+- `UnbindAll` returns `count, false, errorMessage` when incomplete.
+
+Helper option-contract violations raise Lua errors. Operational helper
+failures return `nil, errorMessage` or `false, errorMessage`.
 
 Helper creation and binding are transactional. A failure removes any context
 already installed. If reflected removal itself fails, the scope retains an

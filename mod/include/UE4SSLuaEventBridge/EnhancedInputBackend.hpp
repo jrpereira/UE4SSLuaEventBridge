@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -21,6 +22,7 @@ struct LuaSession;
 struct EnhancedInputEvent
 {
     uint64_t subscription{};
+    uint64_t sequence{};
     std::shared_ptr<struct EnhancedInputSubscription> owner;
     float elapsed_processed{};
     float elapsed_triggered{};
@@ -30,14 +32,42 @@ struct EnhancedInputEvent
     EnhancedInputABI::ValueType value_type{EnhancedInputABI::ValueType::Boolean};
 };
 
+struct EnhancedInputDebugInfo
+{
+    bool enabled{};
+    bool primary{};
+    uint64_t scope_id{};
+    uint64_t binding_id{};
+    std::string label;
+    std::string key;
+    std::string trigger_name;
+};
+
+struct EnhancedInputTrace
+{
+    LuaSession* session{};
+    std::string line;
+};
+
 struct EnhancedInputDispatchState
 {
     std::atomic_bool accepting{false};
     std::atomic_bool clone_created{false};
     std::atomic_uint64_t live_bindings{0};
+    std::atomic_uint64_t next_event_sequence{1};
     std::mutex mutex;
     std::vector<EnhancedInputEvent> events;
+    std::vector<EnhancedInputTrace> traces;
 };
+
+void write_debug_trace(
+    const std::shared_ptr<EnhancedInputDispatchState>& dispatch_state,
+    LuaSession* session,
+    const EnhancedInputDebugInfo& debug,
+    std::string_view stage,
+    std::string_view phase,
+    uint64_t sequence = 0,
+    std::string_view reason = {});
 
 struct EnhancedInputSubscription
 {
@@ -48,6 +78,7 @@ struct EnhancedInputSubscription
     std::string action_path_utf8;
     std::string phase_name;
     EnhancedInputABI::TriggerEvent phase{EnhancedInputABI::TriggerEvent::None};
+    EnhancedInputDebugInfo debug;
     std::atomic_bool active{true};
 };
 
@@ -77,13 +108,22 @@ public:
         uint64_t callback_token,
         std::string action_path,
         std::string phase_name,
-        EnhancedInputABI::TriggerEvent phase);
+        EnhancedInputABI::TriggerEvent phase,
+        EnhancedInputDebugInfo debug = {});
     bool unsubscribe(LuaSession& session, uint64_t id);
     std::size_t unsubscribe_all(LuaSession& session);
     void deactivate(LuaSession& session, uint64_t id);
     void deactivate_all(LuaSession& session);
 
     std::vector<EnhancedInputEvent> take_events();
+    std::vector<EnhancedInputTrace> take_traces();
+    void trace(
+        LuaSession& session,
+        const EnhancedInputDebugInfo& debug,
+        std::string_view stage,
+        std::string_view phase = {},
+        uint64_t sequence = 0,
+        std::string_view reason = {});
 
 private:
     class NativeBinding;

@@ -5,7 +5,19 @@
 #include <algorithm>
 #include <cstring>
 #include <new>
+#include <string_view>
 #include <utility>
+
+#if defined(_MSC_VER)
+#define UE4SSLEB_WINAPI __stdcall
+#else
+#define UE4SSLEB_WINAPI
+#endif
+
+extern "C" __declspec(dllimport) unsigned long UE4SSLEB_WINAPI GetCurrentThreadId();
+extern "C" __declspec(dllimport) void UE4SSLEB_WINAPI OutputDebugStringA(const char* output);
+
+#undef UE4SSLEB_WINAPI
 
 namespace UE4SSLuaEventBridge
 {
@@ -39,6 +51,88 @@ UClass* object_class(UObject* object)
         sizeof(result));
     return result;
 }
+
+void append_debug_text(std::string& output, std::string_view value)
+{
+    output.push_back('"');
+    if (value.empty())
+    {
+        output.push_back('-');
+    }
+    else
+    {
+        for (const unsigned char character : value)
+        {
+            if (character == '\\' || character == '"')
+            {
+                output.push_back('\\');
+            }
+            output.push_back(character >= 0x20 ? static_cast<char>(character) : '?');
+        }
+    }
+    output.push_back('"');
+}
+}
+
+void write_debug_trace(
+    const std::shared_ptr<EnhancedInputDispatchState>& dispatch_state,
+    LuaSession* session,
+    const EnhancedInputDebugInfo& debug,
+    std::string_view stage,
+    std::string_view phase,
+    uint64_t sequence,
+    std::string_view reason)
+{
+    if (!debug.enabled)
+    {
+        return;
+    }
+
+    try
+    {
+        std::string line = "[UE4SSLuaEventBridge][trace] label=";
+        append_debug_text(line, debug.label);
+        line += " stage=";
+        append_debug_text(line, stage);
+        line += " scope=" + std::to_string(debug.scope_id);
+        line += " binding=" + std::to_string(debug.binding_id);
+        line += " key=";
+        append_debug_text(line, debug.key);
+        line += " trigger=";
+        append_debug_text(line, debug.trigger_name);
+        line += " phase=";
+        append_debug_text(line, phase);
+        line += " event_seq=" + std::to_string(sequence);
+        line += " thread_id=" + std::to_string(GetCurrentThreadId());
+        line += " game_thread=";
+        line += RC::Unreal::IsInGameThread() ? "true" : "false";
+        line += " reason=";
+        append_debug_text(line, reason);
+        line.push_back('\n');
+
+        // Make the record visible immediately to an attached debugger. The
+        // queue below sends the same line through Lua's normal print route on
+        // the bridge update thread, which places it in the UE4SS log.
+        OutputDebugStringA(line.c_str());
+        if (!dispatch_state || !session ||
+            !dispatch_state->accepting.load(std::memory_order_acquire))
+        {
+            return;
+        }
+
+        std::scoped_lock lock(dispatch_state->mutex);
+        if (dispatch_state->accepting.load(std::memory_order_acquire))
+        {
+            dispatch_state->traces.push_back({session, std::move(line)});
+        }
+    }
+    catch (...)
+    {
+        // Diagnostics must never alter input delivery. The debugger fallback
+        // deliberately avoids allocation and remains useful if a log device
+        // itself is the failing component.
+        OutputDebugStringA("[UE4SSLuaEventBridge][trace] trace_write_failed\n");
+    }
 }
 
 UObject* ABI::InputActionInstanceView::source_action() const
@@ -94,9 +188,27 @@ public:
 
     void Execute(const ABI::InputActionInstanceView& instance) const override
     {
-        if (!owner_->active.load(std::memory_order_acquire) ||
-            !dispatch_state_->accepting.load(std::memory_order_acquire))
+        const auto sequence =
+            dispatch_state_->next_event_sequence.fetch_add(1, std::memory_order_relaxed);
+        write_debug_trace(
+            dispatch_state_, owner_->session, owner_->debug,
+            "enhanced_input_event", owner_->phase_name, sequence);
+        write_debug_trace(
+            dispatch_state_, owner_->session, owner_->debug,
+            "native_delegate_entered", owner_->phase_name, sequence);
+
+        if (!owner_->active.load(std::memory_order_acquire))
         {
+            write_debug_trace(
+                dispatch_state_, owner_->session, owner_->debug,
+                "event_rejected", owner_->phase_name, sequence, "binding_inactive");
+            return;
+        }
+        if (!dispatch_state_->accepting.load(std::memory_order_acquire))
+        {
+            write_debug_trace(
+                dispatch_state_, owner_->session, owner_->debug,
+                "event_rejected", owner_->phase_name, sequence, "dispatch_stopped");
             return;
         }
 
@@ -104,6 +216,7 @@ public:
         {
             EnhancedInputEvent queued{};
             queued.subscription = owner_->id;
+            queued.sequence = sequence;
             queued.owner = owner_;
             queued.elapsed_processed = instance.elapsed_processed();
             queued.elapsed_triggered = instance.elapsed_triggered();
@@ -112,11 +225,35 @@ public:
             queued.z = instance.z();
             queued.value_type = instance.value_type();
 
-            std::scoped_lock lock(dispatch_state_->mutex);
-            if (owner_->active.load(std::memory_order_acquire) &&
-                dispatch_state_->accepting.load(std::memory_order_acquire))
+            bool accepted{};
+            std::string_view rejection_reason;
             {
-                dispatch_state_->events.push_back(std::move(queued));
+                std::scoped_lock lock(dispatch_state_->mutex);
+                if (!owner_->active.load(std::memory_order_acquire))
+                {
+                    rejection_reason = "binding_inactive";
+                }
+                else if (!dispatch_state_->accepting.load(std::memory_order_acquire))
+                {
+                    rejection_reason = "dispatch_stopped";
+                }
+                else
+                {
+                    dispatch_state_->events.push_back(std::move(queued));
+                    accepted = true;
+                }
+            }
+            if (accepted)
+            {
+                write_debug_trace(
+                    dispatch_state_, owner_->session, owner_->debug,
+                    "event_queued", owner_->phase_name, sequence);
+            }
+            else
+            {
+                write_debug_trace(
+                    dispatch_state_, owner_->session, owner_->debug,
+                    "event_rejected", owner_->phase_name, sequence, rejection_reason);
             }
         }
         catch (...)
@@ -124,6 +261,9 @@ public:
             // Never unwind through Unreal's input dispatcher. An allocation
             // failure disables this subscription until game-thread cleanup.
             owner_->active.store(false, std::memory_order_release);
+            write_debug_trace(
+                dispatch_state_, owner_->session, owner_->debug,
+                "event_rejected", owner_->phase_name, sequence, "queue_exception");
         }
     }
 
@@ -200,6 +340,7 @@ bool EnhancedInputBackend::shutdown()
     {
         std::scoped_lock event_lock(dispatch_state_->mutex);
         dispatch_state_->events.clear();
+        dispatch_state_->traces.clear();
     }
     return !requires_module_pin &&
            dispatch_state_->live_bindings.load(std::memory_order_acquire) == 0;
@@ -275,7 +416,7 @@ std::pair<uint64_t, std::string> EnhancedInputBackend::open_target(LuaSession& s
     auto* component = resolve_component(widen_ascii(component_path));
     if (!component)
     {
-        return {0, "EnhancedInputComponent was not found at the supplied object path"};
+        return {0, "EnhancedInputComponent was not found at object path: " + component_path};
     }
 
     Target target{};
@@ -334,7 +475,8 @@ std::pair<uint64_t, std::string> EnhancedInputBackend::subscribe(
     uint64_t callback_token,
     std::string action_path,
     std::string phase_name,
-    ABI::TriggerEvent phase)
+    ABI::TriggerEvent phase,
+    EnhancedInputDebugInfo debug)
 {
     std::scoped_lock lock(mutex_);
     if (!initialized_.load(std::memory_order_acquire))
@@ -346,7 +488,8 @@ std::pair<uint64_t, std::string> EnhancedInputBackend::subscribe(
     const auto target_it = targets_.find(target_id);
     if (target_it == targets_.end() || target_it->second.session != &session)
     {
-        return {0, "invalid Enhanced Input target handle"};
+        return {0, "Enhanced Input target handle is unknown or belongs to another Lua session: " +
+                       std::to_string(target_id)};
     }
 
     auto* component = target_it->second.component.Get();
@@ -358,7 +501,7 @@ std::pair<uint64_t, std::string> EnhancedInputBackend::subscribe(
     auto* action = resolve_action(widen_ascii(action_path));
     if (!action)
     {
-        return {0, "InputAction was not found at the supplied object path"};
+        return {0, "InputAction was not found at object path: " + action_path};
     }
 
     auto subscription = std::make_shared<EnhancedInputSubscription>();
@@ -369,6 +512,7 @@ std::pair<uint64_t, std::string> EnhancedInputBackend::subscribe(
     subscription->action_path_utf8 = std::move(action_path);
     subscription->phase_name = std::move(phase_name);
     subscription->phase = phase;
+    subscription->debug = std::move(debug);
 
     // Complete all potentially allocating bookkeeping before publishing the
     // polymorphic binding into Unreal's array. After reserve succeeds, the
@@ -393,6 +537,12 @@ std::pair<uint64_t, std::string> EnhancedInputBackend::subscribe(
     live.binding = binding;
     live.subscription = id;
     bindings_.push_back(std::move(live));
+    if (subscription->debug.primary)
+    {
+        write_debug_trace(
+            dispatch_state_, subscription->session, subscription->debug,
+            "binding_created", subscription->phase_name);
+    }
     return {id, {}};
 }
 
@@ -404,7 +554,8 @@ bool EnhancedInputBackend::unsubscribe_locked(LuaSession& session, uint64_t id)
         return false;
     }
 
-    it->second->active.store(false, std::memory_order_release);
+    auto subscription = it->second;
+    subscription->active.store(false, std::memory_order_release);
     for (auto binding_it = bindings_.begin(); binding_it != bindings_.end();)
     {
         if (binding_it->subscription == id)
@@ -418,6 +569,12 @@ bool EnhancedInputBackend::unsubscribe_locked(LuaSession& session, uint64_t id)
         }
     }
     subscriptions_.erase(it);
+    if (subscription->debug.primary)
+    {
+        write_debug_trace(
+            dispatch_state_, subscription->session, subscription->debug,
+            "binding_removed", subscription->phase_name);
+    }
     return true;
 }
 
@@ -534,10 +691,45 @@ void EnhancedInputBackend::collect_inactive_locked()
 
 std::vector<EnhancedInputEvent> EnhancedInputBackend::take_events()
 {
-    std::scoped_lock lock(dispatch_state_->mutex);
     std::vector<EnhancedInputEvent> result;
-    result.swap(dispatch_state_->events);
+    {
+        std::scoped_lock lock(dispatch_state_->mutex);
+        result.swap(dispatch_state_->events);
+    }
+    for (const auto& event : result)
+    {
+        if (event.owner)
+        {
+            write_debug_trace(
+                dispatch_state_,
+                event.owner->session,
+                event.owner->debug,
+                "event_dequeued",
+                event.owner->phase_name,
+                event.sequence);
+        }
+    }
     return result;
+}
+
+std::vector<EnhancedInputTrace> EnhancedInputBackend::take_traces()
+{
+    std::scoped_lock lock(dispatch_state_->mutex);
+    std::vector<EnhancedInputTrace> result;
+    result.swap(dispatch_state_->traces);
+    return result;
+}
+
+void EnhancedInputBackend::trace(
+    LuaSession& session,
+    const EnhancedInputDebugInfo& debug,
+    std::string_view stage,
+    std::string_view phase,
+    uint64_t sequence,
+    std::string_view reason)
+{
+    write_debug_trace(
+        dispatch_state_, &session, debug, stage, phase, sequence, reason);
 }
 
 EnhancedInputBackend::NativeBinding* EnhancedInputBackend::attach(

@@ -14,12 +14,16 @@ printf '%s\n' \
     'namespace UE4SSLuaEventBridge {' \
     'inline constexpr std::array<std::string_view, 3> embedded_lua_api_chunks{' \
     > "${header}"
-for offset in 0 7000 14000; do
+for offset in 0 7000; do
     printf '%s' 'R"UE4SSLEB_LUA(' >> "${header}"
     dd if="${repo_root}/mod/lua/bridge_api.lua" bs=1 skip="${offset}" count=7000 \
         status=none >> "${header}"
     printf '%s\n' ')UE4SSLEB_LUA",' >> "${header}"
 done
+printf '%s' 'R"UE4SSLEB_LUA(' >> "${header}"
+dd if="${repo_root}/mod/lua/bridge_api.lua" bs=1 skip=14000 \
+    status=none >> "${header}"
+printf '%s\n' ')UE4SSLEB_LUA",' >> "${header}"
 printf '%s\n' '};' '}' >> "${header}"
 
 g++ \
