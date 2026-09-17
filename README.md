@@ -3,7 +3,7 @@
 `UE4SSLuaEventBridge` is a native UE4SS C++ mod that exposes native Unreal
 Enhanced Input action events to Lua through a small, explicit-target API.
 
-Version 0.3.2 targets UE4SS `3.0.1 Beta #0` at commit `97b7e501` and Unreal
+Version 0.3.3 targets UE4SS `3.0.1 Beta #0` at commit `97b7e501` and Unreal
 Engine 5.5 on Windows x64. The C++ and Unreal layouts are ABI-pinned; a build
 for a nearby UE4SS or engine revision is not assumed compatible.
 
@@ -19,6 +19,8 @@ local Trigger = Helpers.Trigger
 local input, openError = Helpers.OpenInput({
     component_path = componentPath,
     subsystem_path = enhancedInputSubsystemPath,
+    debug = false, -- Set true for end-to-end Enhanced Input trace lines.
+    debug_label = "MyMod",
 })
 
 local tapHandle, tapError = input:Bind("F10", Trigger.Tap, function()
@@ -55,6 +57,10 @@ UE4SSLuaEventBridge.Unbind(handle)
 UE4SSLuaEventBridge.CloseInputComponent(target)
 UE4SSLuaEventBridge.UnbindAll()
 ```
+
+Primitive failures include a descriptive error return. `OpenInputComponent`
+and `BindAction` return `nil, error`; `Unbind` and `CloseInputComponent` return
+`false, error`; `UnbindAll` returns `count, completed, error`.
 
 The caller supplies exact live object paths and owns bind/unbind/rebind policy.
 The bridge performs no controller discovery, UObject listening, `ProcessEvent`
