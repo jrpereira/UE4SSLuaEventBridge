@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - "release/v*.*.*"
+  # Same-repository merged PRs support publishers whose ref APIs do not emit push.
   pull_request:
     branches:
       - "release/v*.*.*"
