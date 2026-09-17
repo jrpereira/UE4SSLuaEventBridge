@@ -12,6 +12,8 @@ local counters = {
 local nextObject = 0
 local nextHandle = 0
 local nativeTokens = {}
+local nativeBindings = {}
+local scopeTraces = {}
 local failNextBind = false
 local gameThread = true
 
@@ -75,9 +77,9 @@ function FName(value) return { value = value } end
 
 __UE4SSLuaEventBridge_SessionId = 17
 
-function UE4SSLuaEventBridge_GetVersion() return "0.3.2" end
+function UE4SSLuaEventBridge_GetVersion() return "0.3.3" end
 function UE4SSLuaEventBridge_GetCapabilities()
-    return 3, true, true, true, true, true, true, "97b7e501"
+    return 4, true, true, true, true, true, true, true, true, "97b7e501"
 end
 function UE4SSLuaEventBridge_IsInGameThread() return gameThread end
 function UE4SSLuaEventBridge_OpenInputComponent(_session, ...)
@@ -95,12 +97,21 @@ function UE4SSLuaEventBridge_BindAction(...)
         return nil, "injected bind failure"
     end
     nextHandle = nextHandle + 1
-    nativeTokens[nextHandle] = args[#args]
+    nativeTokens[nextHandle] = args[69]
+    nativeBindings[nextHandle] = {
+        phase = args[68],
+        debug = args[70] == 1,
+        scope_id = args[71],
+        binding_id = args[72],
+        primary = args[73] == 1,
+        trigger_kind = args[74],
+    }
     return nextHandle
 end
 function UE4SSLuaEventBridge_Unbind(_session, handle)
-    if nativeTokens[handle] == nil then return false end
+    if nativeTokens[handle] == nil then return false, "unknown subscription handle" end
     nativeTokens[handle] = nil
+    nativeBindings[handle] = nil
     counters.native_unbound = counters.native_unbound + 1
     return true
 end
@@ -108,9 +119,13 @@ function UE4SSLuaEventBridge_UnbindAll(_session)
     local count = 0
     for handle in pairs(nativeTokens) do
         nativeTokens[handle] = nil
+        nativeBindings[handle] = nil
         count = count + 1
     end
     return count, true
+end
+function UE4SSLuaEventBridge_TraceScope(_session, scopeId, stage, ...)
+    scopeTraces[#scopeTraces + 1] = { scope_id = scopeId, stage = stage }
 end
 
 local dispatch = assert(loadfile("mod/lua/bridge_api.lua"))()
@@ -118,8 +133,17 @@ local bridge = UE4SSLuaEventBridge
 local Helpers = bridge.Helpers
 local Trigger = Helpers.Trigger
 
-expect(bridge.API_VERSION == 3)
+expect(bridge.API_VERSION == 4)
 expect(bridge.GetCapabilities().helpers == true)
+expect(bridge.GetCapabilities().detailed_errors == true)
+expect(bridge.GetCapabilities().debug_tracing == true)
+
+local invalidTarget, invalidTargetError = bridge.CloseInputComponent("bad")
+expect(not invalidTarget and string.find(invalidTargetError, "positive integer", 1, true))
+local invalidBind, invalidBindError = bridge.BindAction(1, "", "Triggered", function() end)
+expect(invalidBind == nil and string.find(invalidBindError, "1..512", 1, true))
+local missingRemoved, missingRemoveError = bridge.Unbind(999)
+expect(not missingRemoved and missingRemoveError == "unknown subscription handle")
 
 local readOnly = pcall(function() Trigger.Tap = "changed" end)
 expect(not readOnly, "Trigger constants must be read-only")
@@ -153,6 +177,8 @@ local tapHandle, tapError = scope:Bind("F10", Trigger.Tap, function(event)
     tapEvent = event
 end, { threshold_seconds = 0.2 })
 expect(tapHandle ~= nil, tapError)
+expect(nativeBindings[tapHandle].debug == false,
+    "debug-disabled scopes must not attach diagnostic metadata")
 
 local holdEvent
 local holdHandle, holdError = scope:Bind("F10", Trigger.Hold, function(event)
@@ -173,12 +199,13 @@ expect(counters.native_unbound == 0 and counters.contexts_removed == 0,
 gameThread = true
 
 dispatch(nativeTokens[tapHandle], tapHandle, "/Engine/Transient.Tap", "Triggered",
-    0.1, 0.0, 1.0, 0.0, 0.0, 0)
+    0.1, 0.0, 1.0, 0.0, 0.0, 0, 41)
 expect(tapEvent.key == "F10")
 expect(tapEvent.trigger == Trigger.Tap)
+expect(tapEvent.sequence == 41)
 
 dispatch(nativeTokens[holdHandle], holdHandle, "/Engine/Transient.Hold", "Triggered",
-    0.75, 0.25, 1.0, 0.0, 0.0, 0)
+    0.75, 0.25, 1.0, 0.0, 0.0, 0, 42)
 expect(holdEvent.trigger == Trigger.Hold)
 expect(holdEvent.elapsed_processed == 0.75)
 
@@ -189,15 +216,16 @@ expect(counters.contexts_removed == 1)
 failNextBind = true
 local failedHandle, failedError = scope:Bind("F11", Trigger.Tap, function() end)
 expect(failedHandle == nil and failedError == "injected bind failure")
-expect(counters.contexts_added == 3)
-expect(counters.contexts_removed == 2, "failed Bind must roll back its context")
+expect(counters.contexts_added == 2)
+expect(counters.contexts_removed == 1,
+    "failed native Bind must not publish its mapping context")
 
 local badHandle = assert(scope:Bind("F12", Trigger.Tap, function()
     error("injected callback failure")
 end))
 local callbackSucceeded = pcall(dispatch,
     nativeTokens[badHandle], badHandle, "/Engine/Transient.Bad", "Triggered",
-    0.1, 0.0, 1.0, 0.0, 0.0, 0)
+    0.1, 0.0, 1.0, 0.0, 0.0, 0, 43)
 expect(not callbackSucceeded)
 -- The native update catch deactivates and reaps a failed callback before a
 -- later explicit Unbind. Model the resulting already-absent native handle.
@@ -207,7 +235,7 @@ expect(scope:Unbind(badHandle) == true,
 
 local closed, closeError = scope:Close()
 expect(closed, closeError)
-expect(counters.contexts_removed == 4)
+expect(counters.contexts_removed == 3)
 expect(counters.targets_closed == 1)
 expect(scope:Close() == true, "Close must be idempotent")
 
@@ -216,7 +244,53 @@ local secondScope = assert(Helpers.OpenInput({
     subsystem_path = subsystemPath,
 }))
 assert(secondScope:Bind("F12", Trigger.Tap, function() end))
-expect(bridge.UnbindAll() == 1, "UnbindAll must count helper subscriptions")
+local allCount, allCompleted, allError = bridge.UnbindAll()
+expect(allCount == 1 and allCompleted and allError == nil,
+    "UnbindAll must count helper subscriptions and report completion")
 expect(counters.targets_closed == 2)
+
+local debugScope = assert(Helpers.OpenInput({
+    component_path = "/Game/Test.Component",
+    subsystem_path = subsystemPath,
+    debug = true,
+    debug_label = "HelperTests",
+}))
+expect(#scopeTraces == 1 and scopeTraces[1].stage == 1,
+    "debug OpenInput must emit scope_opened")
+
+local handlesBeforeDebugBind = nextHandle
+local debugEvent
+local debugHandle = assert(debugScope:Bind("F10", Trigger.Hold, function(event)
+    debugEvent = event
+end))
+expect(nextHandle - handlesBeforeDebugBind == 4,
+    "debug binding must observe Triggered, Started, Completed, and Canceled")
+expect(nativeBindings[debugHandle].phase == 1 and nativeBindings[debugHandle].primary,
+    "Triggered observer must be the logical primary binding")
+local debugScopeId = nativeBindings[debugHandle].scope_id
+local debugBindingId = nativeBindings[debugHandle].binding_id
+expect(nativeBindings[debugHandle + 1].phase == 2)
+expect(nativeBindings[debugHandle + 2].phase == 5)
+expect(nativeBindings[debugHandle + 3].phase == 4)
+for handle = debugHandle, debugHandle + 3 do
+    expect(nativeBindings[handle].debug == true)
+    expect(nativeBindings[handle].scope_id == debugScopeId)
+    expect(nativeBindings[handle].binding_id == debugBindingId)
+    expect(nativeBindings[handle].trigger_kind == 2)
+end
+
+dispatch(nativeTokens[debugHandle], debugHandle, "/Engine/Transient.DebugHold", "Triggered",
+    1.0, 0.5, 1.0, 0.0, 0.0, 0, 99)
+expect(debugEvent.sequence == 99)
+expect(debugEvent.scope_id == debugScopeId)
+expect(debugEvent.binding_id == debugBindingId)
+
+local nativeUnboundBeforeDebug = counters.native_unbound
+expect(debugScope:Unbind(debugHandle) == true)
+expect(counters.native_unbound - nativeUnboundBeforeDebug == 4,
+    "debug Unbind must remove every phase observer")
+expect(debugScope:Close() == true)
+expect(#scopeTraces == 2 and scopeTraces[2].stage == 2,
+    "debug Close must emit scope_closed")
 
 print("Lua helper tests passed")

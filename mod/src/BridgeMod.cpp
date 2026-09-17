@@ -46,6 +46,8 @@ using UE4SSLuaEventBridge::EnhancedInputABI::TriggerEvent;
 
 constexpr int32_t packed_path_word_count = 64;
 constexpr int32_t packed_path_max_length = packed_path_word_count * 8;
+constexpr int32_t packed_debug_word_count = 8;
+constexpr int32_t packed_debug_max_length = packed_debug_word_count * 8;
 
 class UE4SSLuaEventBridgeMod;
 UE4SSLuaEventBridgeMod* active_mod{};
@@ -64,22 +66,29 @@ bool pin_current_module()
 }
 
 
-bool decode_packed_path(const Lua& lua, std::string& path, std::string& error)
+bool decode_packed_text(
+    const Lua& lua,
+    int32_t word_count,
+    int32_t maximum_length,
+    bool allow_empty,
+    std::string_view description,
+    std::string& value,
+    std::string& error)
 {
     const auto length = lua.get_integer(1);
-    if (length <= 0 || length > packed_path_max_length)
+    if (length < (allow_empty ? 0 : 1) || length > maximum_length)
     {
-        error = "invalid encoded object path length";
+        error = "invalid encoded " + std::string(description) + " length";
         return false;
     }
 
     std::array<uint64_t, packed_path_word_count> words{};
-    for (int32_t index = 0; index < packed_path_word_count; ++index)
+    for (int32_t index = 0; index < word_count; ++index)
     {
         words[static_cast<std::size_t>(index)] = static_cast<uint64_t>(lua.get_integer(1));
     }
 
-    path.assign(static_cast<std::size_t>(length), '\0');
+    value.assign(static_cast<std::size_t>(length), '\0');
     for (int64_t index = 0; index < length; ++index)
     {
         const auto word = words[static_cast<std::size_t>(index / 8)];
@@ -87,12 +96,24 @@ bool decode_packed_path(const Lua& lua, std::string& path, std::string& error)
         const auto byte = static_cast<uint8_t>((word >> shift) & 0xFFu);
         if (byte == 0)
         {
-            error = "invalid encoded object path byte";
+            error = "invalid encoded " + std::string(description) + " byte";
             return false;
         }
-        path[static_cast<std::size_t>(index)] = static_cast<char>(byte);
+        value[static_cast<std::size_t>(index)] = static_cast<char>(byte);
     }
     return true;
+}
+
+bool decode_packed_path(const Lua& lua, std::string& path, std::string& error)
+{
+    return decode_packed_text(
+        lua,
+        packed_path_word_count,
+        packed_path_max_length,
+        false,
+        "object path",
+        path,
+        error);
 }
 
 class UE4SSLuaEventBridgeMod final : public RC::CppUserModBase
@@ -101,7 +122,7 @@ public:
     UE4SSLuaEventBridgeMod()
     {
         ModName = L"UE4SSLuaEventBridge";
-        ModVersion = L"0.3.2";
+        ModVersion = L"0.3.3";
         ModDescription = L"Game-agnostic native Enhanced Input callbacks for UE4SS Lua mods";
         ModAuthors = L"UE4SS Lua Event Bridge contributors";
         ModIntendedSDKVersion = L"3.0.1-97b7e501";
@@ -120,17 +141,56 @@ public:
 
     void on_update() override
     {
+        flush_debug_traces();
         for (auto& event : backend_.take_events())
         {
+            flush_debug_traces();
             const auto& subscription = event.owner;
             auto* session = subscription ? subscription->session : nullptr;
-            if (!subscription || !subscription->active.load() || !session || !session->active.load() || !session->lua)
+            if (!subscription)
             {
+                continue;
+            }
+            if (!subscription->active.load())
+            {
+                if (session)
+                {
+                    backend_.trace(
+                        *session,
+                        subscription->debug,
+                        "callback_skipped",
+                        subscription->phase_name,
+                        event.sequence,
+                        "binding_inactive");
+                    flush_debug_traces();
+                }
+                continue;
+            }
+            if (!session || !session->active.load() || !session->lua)
+            {
+                if (session)
+                {
+                    backend_.trace(
+                        *session,
+                        subscription->debug,
+                        "callback_skipped",
+                        subscription->phase_name,
+                        event.sequence,
+                        "lua_session_inactive");
+                    flush_debug_traces();
+                }
                 continue;
             }
 
             try
             {
+                backend_.trace(
+                    *session,
+                    subscription->debug,
+                    "lua_callback_started",
+                    subscription->phase_name,
+                    event.sequence);
+                flush_debug_traces();
                 const auto& lua = *session->lua;
                 lua.registry().get_function_ref(session->dispatcher_ref);
                 lua.set_integer(static_cast<int64_t>(subscription->callback_token));
@@ -143,16 +203,45 @@ public:
                 lua.set_number(event.y);
                 lua.set_number(event.z);
                 lua.set_integer(static_cast<int64_t>(event.value_type));
-                lua.call_function(10, 0);
+                lua.set_integer(static_cast<int64_t>(event.sequence));
+                lua.call_function(11, 0);
+                backend_.trace(
+                    *session,
+                    subscription->debug,
+                    "lua_callback_completed",
+                    subscription->phase_name,
+                    event.sequence);
+                flush_debug_traces();
             }
-            catch (...)
+            catch (const std::exception& callback_error)
             {
+                backend_.trace(
+                    *session,
+                    subscription->debug,
+                    "lua_callback_failed",
+                    subscription->phase_name,
+                    event.sequence,
+                    callback_error.what());
+                flush_debug_traces();
                 // Lua callbacks run on UE4SS's event-loop thread. Deactivate
                 // immediately, then let the next game-thread bridge operation
                 // detach the native binding.
                 backend_.deactivate(*session, subscription->id);
             }
+            catch (...)
+            {
+                backend_.trace(
+                    *session,
+                    subscription->debug,
+                    "lua_callback_failed",
+                    subscription->phase_name,
+                    event.sequence,
+                    "unknown_lua_exception");
+                flush_debug_traces();
+                backend_.deactivate(*session, subscription->id);
+            }
         }
+        flush_debug_traces();
     }
 
     void on_lua_start(RC::StringViewType, Lua& lua, Lua& main_lua, Lua& async_lua, Lua* hook_lua) override
@@ -170,6 +259,7 @@ public:
         lua.register_function("UE4SSLuaEventBridge_BindAction", &bind_action);
         lua.register_function("UE4SSLuaEventBridge_Unbind", &unbind);
         lua.register_function("UE4SSLuaEventBridge_UnbindAll", &unbind_all);
+        lua.register_function("UE4SSLuaEventBridge_TraceScope", &trace_scope);
 
         const auto session_script =
             std::string{"__UE4SSLuaEventBridge_SessionId = "} + std::to_string(session_ptr->id);
@@ -272,23 +362,50 @@ public:
     }
 
 private:
+    void flush_debug_traces()
+    {
+        for (auto& trace : backend_.take_traces())
+        {
+            auto* session = trace.session;
+            if (!session || !session->active.load(std::memory_order_acquire) || !session->lua)
+            {
+                continue;
+            }
+            try
+            {
+                const auto& lua = *session->lua;
+                lua.registry().get_function_ref(session->dispatcher_ref);
+                lua.set_integer(0);
+                lua.set_string(trace.line);
+                lua.call_function(2, 0);
+            }
+            catch (...)
+            {
+                // The native trace writer already emitted the same line to
+                // OutputDebugString. Logging must not affect input dispatch.
+            }
+        }
+    }
+
     static int get_version(const Lua& lua)
     {
-        lua.set_string("0.3.2");
+        lua.set_string("0.3.3");
         return 1;
     }
 
     static int get_capabilities(const Lua& lua)
     {
-        lua.set_integer(3);
+        lua.set_integer(4);
         lua.set_bool(active_mod && active_mod->backend_.available());
         lua.set_bool(true);
         lua.set_bool(true);
         lua.set_bool(true);
         lua.set_bool(true);
         lua.set_bool(true);
+        lua.set_bool(true);
+        lua.set_bool(true);
         lua.set_string("97b7e501");
-        return 8;
+        return 10;
     }
 
     static int is_in_game_thread(const Lua& lua)
@@ -336,7 +453,7 @@ private:
         if (!session)
         {
             lua.set_nil();
-            lua.set_string("Lua session is not registered");
+            lua.set_string("Lua session is not registered or is stopping");
             return 2;
         }
 
@@ -364,11 +481,48 @@ private:
 
     static int close_input_component(const Lua& lua)
     {
+        if (!active_mod || !active_mod->backend_.available())
+        {
+            lua.set_bool(false);
+            lua.set_string("Enhanced Input backend is not initialized");
+            return 2;
+        }
+        if (!RC::Unreal::IsInGameThread())
+        {
+            lua.set_bool(false);
+            lua.set_string("CloseInputComponent must run on the Unreal game thread");
+            return 2;
+        }
+
         auto* session = consume_session(lua);
-        const auto handle = static_cast<uint64_t>(lua.get_integer(1));
-        lua.set_bool(
-            RC::Unreal::IsInGameThread() && session && active_mod &&
-            active_mod->backend_.close_target(*session, handle));
+        if (!session)
+        {
+            lua.set_bool(false);
+            lua.set_string("Lua session is not registered or is stopping");
+            return 2;
+        }
+
+        const auto handle_value = lua.get_integer(1);
+        if (handle_value <= 0)
+        {
+            lua.set_bool(false);
+            lua.set_string("invalid Enhanced Input target handle");
+            return 2;
+        }
+
+        if (!active_mod->backend_.close_target(*session, static_cast<uint64_t>(handle_value)))
+        {
+            lua.set_bool(false);
+            const auto message = active_mod->backend_.available()
+                ? "Enhanced Input target handle is unknown or belongs to another Lua session: " +
+                      std::to_string(handle_value)
+                : "Enhanced Input backend shut down while closing target handle: " +
+                      std::to_string(handle_value);
+            lua.set_string(message);
+            return 2;
+        }
+
+        lua.set_bool(true);
         return 1;
     }
 
@@ -391,11 +545,18 @@ private:
         if (!session)
         {
             lua.set_nil();
-            lua.set_string("Lua session is not registered");
+            lua.set_string("Lua session is not registered or is stopping");
             return 2;
         }
 
-        const auto target = static_cast<uint64_t>(lua.get_integer(1));
+        const auto target_value = lua.get_integer(1);
+        if (target_value <= 0)
+        {
+            lua.set_nil();
+            lua.set_string("invalid Enhanced Input target handle");
+            return 2;
+        }
+        const auto target = static_cast<uint64_t>(target_value);
         std::string action_path;
         std::string error;
         if (!decode_packed_path(lua, action_path, error))
@@ -422,8 +583,70 @@ private:
             return 2;
         }
         const auto callback_token = static_cast<uint64_t>(callback_token_value);
+
+        UE4SSLuaEventBridge::EnhancedInputDebugInfo debug;
+        const auto debug_enabled = lua.get_integer(1);
+        if (debug_enabled != 0 && debug_enabled != 1)
+        {
+            lua.set_nil();
+            lua.set_string("invalid debug tracing flag");
+            return 2;
+        }
+        if (debug_enabled == 1)
+        {
+            const auto scope_id = lua.get_integer(1);
+            const auto binding_id = lua.get_integer(1);
+            const auto primary = lua.get_integer(1);
+            const auto trigger = lua.get_integer(1);
+            if (scope_id <= 0 || binding_id <= 0 || (primary != 0 && primary != 1) ||
+                (trigger != 1 && trigger != 2))
+            {
+                lua.set_nil();
+                lua.set_string("invalid debug tracing metadata");
+                return 2;
+            }
+
+            std::string key;
+            std::string label;
+            if (!decode_packed_text(
+                    lua,
+                    packed_debug_word_count,
+                    packed_debug_max_length,
+                    false,
+                    "debug key",
+                    key,
+                    error) ||
+                !decode_packed_text(
+                    lua,
+                    packed_debug_word_count,
+                    packed_debug_max_length,
+                    false,
+                    "debug label",
+                    label,
+                    error))
+            {
+                lua.set_nil();
+                lua.set_string(error);
+                return 2;
+            }
+
+            debug.enabled = true;
+            debug.primary = primary == 1;
+            debug.scope_id = static_cast<uint64_t>(scope_id);
+            debug.binding_id = static_cast<uint64_t>(binding_id);
+            debug.key = std::move(key);
+            debug.label = std::move(label);
+            debug.trigger_name = trigger == 1 ? "Tap" : "Hold";
+        }
+
         auto [handle, backend_error] = active_mod->backend_.subscribe(
-            *session, target, callback_token, std::move(action_path), phase_name, phase);
+            *session,
+            target,
+            callback_token,
+            std::move(action_path),
+            phase_name,
+            phase,
+            std::move(debug));
         if (handle == 0)
         {
             lua.set_nil();
@@ -437,22 +660,109 @@ private:
 
     static int unbind(const Lua& lua)
     {
+        if (!active_mod || !active_mod->backend_.available())
+        {
+            lua.set_bool(false);
+            lua.set_string("Enhanced Input backend is not initialized");
+            return 2;
+        }
+        if (!RC::Unreal::IsInGameThread())
+        {
+            lua.set_bool(false);
+            lua.set_string("Unbind must run on the Unreal game thread");
+            return 2;
+        }
+
         auto* session = consume_session(lua);
-        const auto handle = static_cast<uint64_t>(lua.get_integer(1));
-        lua.set_bool(
-            RC::Unreal::IsInGameThread() && session && active_mod &&
-            active_mod->backend_.unsubscribe(*session, handle));
+        if (!session)
+        {
+            lua.set_bool(false);
+            lua.set_string("Lua session is not registered or is stopping");
+            return 2;
+        }
+
+        const auto handle_value = lua.get_integer(1);
+        if (handle_value <= 0)
+        {
+            lua.set_bool(false);
+            lua.set_string("invalid Enhanced Input subscription handle");
+            return 2;
+        }
+
+        if (!active_mod->backend_.unsubscribe(*session, static_cast<uint64_t>(handle_value)))
+        {
+            lua.set_bool(false);
+            const auto message = active_mod->backend_.available()
+                ? "Enhanced Input subscription handle is unknown or belongs to another Lua session: " +
+                      std::to_string(handle_value)
+                : "Enhanced Input backend shut down while unbinding subscription handle: " +
+                      std::to_string(handle_value);
+            lua.set_string(message);
+            return 2;
+        }
+
+        lua.set_bool(true);
         return 1;
     }
 
     static int unbind_all(const Lua& lua)
     {
+        if (!active_mod || !active_mod->backend_.available())
+        {
+            lua.set_integer(0);
+            lua.set_bool(false);
+            lua.set_string("Enhanced Input backend is not initialized");
+            return 3;
+        }
+        if (!RC::Unreal::IsInGameThread())
+        {
+            lua.set_integer(0);
+            lua.set_bool(false);
+            lua.set_string("UnbindAll must run on the Unreal game thread");
+            return 3;
+        }
+
         auto* session = consume_session(lua);
-        const bool can_unbind = RC::Unreal::IsInGameThread() && session && active_mod;
-        lua.set_integer(
-            can_unbind ? static_cast<int64_t>(active_mod->backend_.unsubscribe_all(*session)) : 0);
-        lua.set_bool(can_unbind);
+        if (!session)
+        {
+            lua.set_integer(0);
+            lua.set_bool(false);
+            lua.set_string("Lua session is not registered or is stopping");
+            return 3;
+        }
+
+        lua.set_integer(static_cast<int64_t>(active_mod->backend_.unsubscribe_all(*session)));
+        lua.set_bool(true);
         return 2;
+    }
+
+    static int trace_scope(const Lua& lua)
+    {
+        auto* session = consume_session(lua);
+        const auto scope_id = lua.get_integer(1);
+        const auto stage = lua.get_integer(1);
+        std::string label;
+        std::string error;
+        const bool decoded = decode_packed_text(
+            lua,
+            packed_debug_word_count,
+            packed_debug_max_length,
+            false,
+            "debug label",
+            label,
+            error);
+        if (!session || scope_id <= 0 || (stage != 1 && stage != 2) || !decoded)
+        {
+            return 0;
+        }
+
+        UE4SSLuaEventBridge::EnhancedInputDebugInfo debug;
+        debug.enabled = true;
+        debug.scope_id = static_cast<uint64_t>(scope_id);
+        debug.label = std::move(label);
+        active_mod->backend_.trace(
+            *session, debug, stage == 1 ? "scope_opened" : "scope_closed");
+        return 0;
     }
 
     UE4SSLuaEventBridge::EnhancedInputBackend backend_;

@@ -16,17 +16,19 @@ local version = bridge.GetVersion()
 local capabilities = bridge.GetCapabilities()
 ```
 
-Version 0.3.2 reports API version 3:
+Version 0.3.3 reports API version 4:
 
 ```lua
 {
-    api = 3,
+    api = 4,
     enhanced_input = true,
     explicit_target = true,
     helpers = true,
     dynamic_input = true,
     trigger_tap = true,
     trigger_hold = true,
+    detailed_errors = true,
+    debug_tracing = true,
     target_ue4ss_commit = "97b7e501",
 }
 ```
@@ -46,6 +48,8 @@ local Trigger = Helpers.Trigger
 local input, err = Helpers.OpenInput({
     component_path = componentPath,
     subsystem_path = subsystemPath,
+    debug = false,
+    debug_label = "MyMod",
 })
 
 local tapHandle, tapError = input:Bind("F10", Trigger.Tap, onTap)
@@ -63,6 +67,12 @@ transient mapping context, Boolean Input Action, and Tap or Hold trigger for
 each binding. Enhanced Input performs trigger classification. See
 [`DEVELOPER_API.md`](DEVELOPER_API.md) for options, payload additions, failure
 rollback, and lifecycle rules.
+
+Set `debug = true` on a scope to trace `Started`, `Triggered`, `Completed`, and
+`Canceled` action phases through native delegate entry, queueing, dequeue, and
+the protected Lua invocation. Trace lines contain stable scope/binding IDs,
+the key and trigger, an event sequence, and thread information. Debugging is
+disabled by default and does not trace raw physical-key detection.
 
 ## Open an explicit input component
 
@@ -110,6 +120,7 @@ The callback receives:
     source_type = "enhanced_input",
     action = "/Game/Input/IA_Example.IA_Example",
     phase = "Triggered",
+    sequence = 27,
     elapsed_processed = 0.201,
     elapsed_triggered = 0.0,
     value = { x = 1.0, y = 0.0, z = 0.0, type = 0 },
@@ -141,6 +152,13 @@ bridge.Unbind(handle)
 bridge.CloseInputComponent(target)
 bridge.UnbindAll()
 ```
+
+Primitive failures use explicit return values:
+
+- `OpenInputComponent` and `BindAction`: `nil, errorMessage`;
+- `Unbind` and `CloseInputComponent`: `false, errorMessage`;
+- `UnbindAll`: `count, completed, errorMessage`, with the third result present
+  when `completed` is false.
 
 A target or subscription handle can only be used by the Lua session that
 created it. Closing a target first unbinds every subscription attached through
