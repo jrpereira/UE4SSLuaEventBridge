@@ -20,6 +20,15 @@ local ENHANCED_INPUT_SUBSYSTEM_PATH =
 -- Enhanced Input Mapping Contexts. Zero is a reasonable neutral default.
 local MAPPING_PRIORITY = 0
 
+-- Set this to true while diagnosing a missing callback. The bridge will log
+-- the generated action's Started, Triggered, Completed, and Canceled phases,
+-- native queue delivery, and Lua invocation. It does not trace raw key input.
+local DEBUG_BRIDGE = false
+
+-- This short label appears on every bridge trace line. Change it to the name
+-- of the mod using this sample. Debug labels are limited to 64 bytes.
+local DEBUG_LABEL = "EnhancedInputTapHold"
+
 local input = nil
 
 local function shutdown()
@@ -42,6 +51,8 @@ local function initialize()
         component_path = COMPONENT_PATH,
         subsystem_path = ENHANCED_INPUT_SUBSYSTEM_PATH,
         mapping_priority = MAPPING_PRIORITY,
+        debug = DEBUG_BRIDGE,
+        debug_label = DEBUG_LABEL,
     })
     if input == nil then
         print("[EnhancedInputTapHold] initialization failed: " .. openError .. "\n")

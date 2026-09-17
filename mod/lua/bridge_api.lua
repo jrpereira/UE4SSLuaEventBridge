@@ -38,7 +38,12 @@ local function __traceback(message)
 end
 
 local function __dispatch(
-    token, handle, sourceAction, phaseName, elapsed, triggered, x, y, z, valueType)
+    token, handle, sourceAction, phaseName, elapsed, triggered, x, y, z, valueType,
+    eventSequence)
+    if token == 0 then
+        print(handle)
+        return
+    end
     local callback = __callbacks[token]
     if callback == nil then return end
 
@@ -49,6 +54,7 @@ local function __dispatch(
         phase = phaseName,
         elapsed_processed = elapsed,
         elapsed_triggered = triggered,
+        sequence = eventSequence,
         value = { x = x, y = y, z = z, type = valueType },
     })
     if not ok then
@@ -57,27 +63,89 @@ local function __dispatch(
     end
 end
 
-local function __packPath(path)
-    assert(type(path) == "string", "object path must be a string")
-    assert(#path > 0 and #path <= 512, "object path must be 1..512 bytes")
+local function __packText(value, wordCount)
     local words = {}
-    for i = 1, 64 do words[i] = 0 end
-    for i = 1, #path do
+    for i = 1, wordCount do words[i] = 0 end
+    for i = 1, #value do
         local word = ((i - 1) // 8) + 1
         local shift = ((i - 1) % 8) * 8
-        words[word] = words[word] | (string.byte(path, i) << shift)
+        words[word] = words[word] | (string.byte(value, i) << shift)
     end
-    local args = { #path }
-    for i = 1, 64 do args[#args + 1] = words[i] end
+    local args = { #value }
+    for i = 1, wordCount do args[#args + 1] = words[i] end
     return args
 end
 
+local function __packPath(path) return __packText(path, 64) end
+local function __packDebugText(value) return __packText(value, 8) end
+
+local function __positiveInteger(value)
+    return type(value) == "number" and value % 1 == 0 and value > 0
+end
+
+local __phases = {
+    Triggered = 1,
+    Started = 2,
+    Ongoing = 3,
+    Canceled = 4,
+    Completed = 5,
+}
+
+local function __bindAction(targetHandle, action, event, callback, trace)
+    if not __positiveInteger(targetHandle) then
+        return nil, "targetHandle must be a positive integer returned by OpenInputComponent"
+    end
+    if type(action) ~= "string" or #action < 1 or #action > 512 then
+        return nil, "action must be a 1..512 byte InputAction object path"
+    end
+    if type(event) ~= "string" or __phases[event] == nil then
+        return nil, "event must be Triggered, Started, Ongoing, Canceled, or Completed"
+    end
+    if type(callback) ~= "function" then
+        return nil, "callback must be a function"
+    end
+
+    local packed = __packPath(action)
+    local args = { __session, targetHandle }
+    for i = 1, #packed do args[#args + 1] = packed[i] end
+    args[#args + 1] = __phases[event]
+
+    __nextCallbackToken = __nextCallbackToken + 1
+    local token = __nextCallbackToken
+    __callbacks[token] = callback
+    args[#args + 1] = token
+
+    if trace == nil then
+        args[#args + 1] = 0
+    else
+        args[#args + 1] = 1
+        args[#args + 1] = trace.scope_id
+        args[#args + 1] = trace.binding_id
+        args[#args + 1] = trace.primary and 1 or 0
+        args[#args + 1] = trace.trigger_kind
+        local packedKey = __packDebugText(trace.key)
+        for i = 1, #packedKey do args[#args + 1] = packedKey[i] end
+        local packedLabel = __packDebugText(trace.label)
+        for i = 1, #packedLabel do args[#args + 1] = packedLabel[i] end
+    end
+
+    local handle, bindError =
+        UE4SSLuaEventBridge_BindAction(table.unpack(args, 1, #args))
+    if handle == nil then
+        __callbacks[token] = nil
+        return nil, bindError
+    end
+    __bindings[handle] = { token = token, target = targetHandle }
+    return handle
+end
+
 local bridge = {
-    API_VERSION = 3,
+    API_VERSION = 4,
     GetVersion = UE4SSLuaEventBridge_GetVersion,
     GetCapabilities = function()
         local api, enhancedInput, explicitTarget, helpers, dynamicInput,
-            triggerTap, triggerHold, target = UE4SSLuaEventBridge_GetCapabilities()
+            triggerTap, triggerHold, detailedErrors, debugTracing, target =
+            UE4SSLuaEventBridge_GetCapabilities()
         return {
             api = api,
             enhanced_input = enhancedInput,
@@ -86,69 +154,48 @@ local bridge = {
             dynamic_input = dynamicInput,
             trigger_tap = triggerTap,
             trigger_hold = triggerHold,
+            detailed_errors = detailedErrors,
+            debug_tracing = debugTracing,
             target_ue4ss_commit = target,
         }
     end,
     OpenInputComponent = function(componentPath)
+        if type(componentPath) ~= "string" or #componentPath < 1 or #componentPath > 512 then
+            return nil, "componentPath must be a 1..512 byte EnhancedInputComponent object path"
+        end
         local packed = __packPath(componentPath)
         local args = { __session }
         for i = 1, #packed do args[#args + 1] = packed[i] end
         return UE4SSLuaEventBridge_OpenInputComponent(table.unpack(args, 1, #args))
     end,
     CloseInputComponent = function(targetHandle)
-        local closed = UE4SSLuaEventBridge_CloseInputComponent(__session, targetHandle)
+        if not __positiveInteger(targetHandle) then
+            return false, "targetHandle must be a positive integer returned by OpenInputComponent"
+        end
+        local closed, closeError =
+            UE4SSLuaEventBridge_CloseInputComponent(__session, targetHandle)
         if closed then
             __forgetTarget(targetHandle)
         end
-        return closed
+        return closed, closeError
     end,
     BindAction = function(targetHandle, action, event, callback)
-        assert(type(targetHandle) == "number", "targetHandle must come from OpenInputComponent")
-        assert(type(action) == "string", "action must be an object path")
-        assert(type(event) == "string", "event must be an ETriggerEvent name")
-        assert(type(callback) == "function", "callback must be a function")
-
-        local phases = {
-            Triggered = 1,
-            Started = 2,
-            Ongoing = 3,
-            Canceled = 4,
-            Completed = 5,
-        }
-        local phase = phases[event]
-        assert(phase ~= nil, "unsupported ETriggerEvent name")
-
-        local packed = __packPath(action)
-        local args = { __session, targetHandle }
-        for i = 1, #packed do args[#args + 1] = packed[i] end
-        args[#args + 1] = phase
-
-        __nextCallbackToken = __nextCallbackToken + 1
-        local token = __nextCallbackToken
-        __callbacks[token] = callback
-        args[#args + 1] = token
-
-        local handle, bindError =
-            UE4SSLuaEventBridge_BindAction(table.unpack(args, 1, #args))
-        if handle == nil then
-            __callbacks[token] = nil
-            return nil, bindError
-        end
-        __bindings[handle] = { token = token, target = targetHandle }
-        return handle
+        return __bindAction(targetHandle, action, event, callback, nil)
     end,
     Unbind = function(handle)
-        local removed = UE4SSLuaEventBridge_Unbind(__session, handle)
+        if not __positiveInteger(handle) then
+            return false, "handle must be a positive integer returned by BindAction"
+        end
+        local removed, unbindError = UE4SSLuaEventBridge_Unbind(__session, handle)
         if removed then
             __forget(handle)
         end
-        return removed
+        return removed, unbindError
     end,
 }
 
 bridge.SubscribeEnhancedInput = function(spec, callback)
-    assert(type(spec) == "table", "spec must be a table")
-    assert(type(spec.target) == "number", "spec.target must come from OpenInputComponent")
+    if type(spec) ~= "table" then return nil, "spec must be a table" end
     return bridge.BindAction(spec.target, spec.action, spec.event, callback)
 end
 
@@ -177,6 +224,8 @@ local __scopeMetatable = {
 local __scopeStates = setmetatable({}, { __mode = "k" })
 local __inputScopes = {}
 local __classCache = {}
+local __nextScopeId = 0
+local __nextBindingId = 0
 
 local function __onGameThread(operation)
     if UE4SSLuaEventBridge_IsInGameThread() then return true end
@@ -249,6 +298,12 @@ end
 
 local function __removeContext(state, record)
     if record.context == nil then return true end
+    if not record.context_added then
+        record.context = nil
+        record.action = nil
+        record.trigger_object = nil
+        return true
+    end
     if not __validObject(state.subsystem) or not __validObject(record.context) then
         record.context = nil
         record.action = nil
@@ -265,17 +320,38 @@ local function __removeContext(state, record)
     record.context = nil
     record.action = nil
     record.trigger_object = nil
+    record.context_added = false
     return true
 end
 
 local function __removeRecord(state, record)
-    if record.native_handle ~= nil then
-        if not bridge.Unbind(record.native_handle) and not record.callback_failed then
-            return false, "failed to unbind native action; run cleanup on the Unreal game thread"
+    local errors = {}
+    for index = #record.native_handles, 1, -1 do
+        local nativeHandle = record.native_handles[index]
+        local removed, unbindError = bridge.Unbind(nativeHandle)
+        local callbackReaped = nativeHandle == record.native_handle and record.callback_failed
+        if removed or callbackReaped then
+            table.remove(record.native_handles, index)
+            if nativeHandle == record.native_handle then record.native_handle = nil end
+        else
+            errors[#errors + 1] = unbindError or "failed to unbind native action"
         end
-        record.native_handle = nil
     end
-    return __removeContext(state, record)
+
+    local contextRemoved, contextError = __removeContext(state, record)
+    if not contextRemoved then errors[#errors + 1] = contextError end
+    if #errors > 0 then return false, table.concat(errors, "; ") end
+    return true
+end
+
+local function __traceScope(state, stage)
+    if not state.debug then return end
+    local packedLabel = __packDebugText(state.debug_label)
+    local args = { __session, state.scope_id, stage }
+    for i = 1, #packedLabel do args[#args + 1] = packedLabel[i] end
+    -- Trace output is observational. A logger failure must not change scope
+    -- lifecycle, and the native trace writer has its own debugger fallback.
+    pcall(UE4SSLuaEventBridge_TraceScope, table.unpack(args, 1, #args))
 end
 
 function __scopeMethods:Bind(key, trigger, callback, options)
@@ -319,6 +395,13 @@ function __scopeMethods:Bind(key, trigger, callback, options)
     if options.trigger_when_paused ~= nil then
         assert(type(options.trigger_when_paused) == "boolean", "trigger_when_paused must be a boolean")
     end
+    if state.debug then
+        assert(#key <= 64, "debug-enabled key names must be at most 64 bytes")
+    end
+
+    __nextBindingId = __nextBindingId + 1
+    local bindingId = __nextBindingId
+    local triggerKind = trigger == __tap and 1 or 2
 
     local context, createError = __construct("InputMappingContext", state.subsystem)
     if context == nil then return nil, createError end
@@ -335,7 +418,10 @@ function __scopeMethods:Bind(key, trigger, callback, options)
         action = action,
         trigger_object = triggerObject,
         native_handle = nil,
+        native_handles = {},
+        context_added = false,
         callback_failed = false,
+        binding_id = bindingId,
     }
 
     local configured, configureError = pcall(function()
@@ -359,7 +445,6 @@ function __scopeMethods:Bind(key, trigger, callback, options)
         end
         action.Triggers = { triggerObject }
         context:MapKey(action, { KeyName = FName(key) })
-        state.subsystem:AddMappingContext(context, state.mapping_priority, {})
     end)
     if not configured then
         local removed, removeError = __removeContext(state, record)
@@ -376,15 +461,26 @@ function __scopeMethods:Bind(key, trigger, callback, options)
         return nil, pathError .. (removeError and "; " .. removeError or "")
     end
 
-    local handle, bindError = bridge.BindAction(state.target, actionPath, "Triggered", function(event)
+    local trace = state.debug and {
+        scope_id = state.scope_id,
+        binding_id = bindingId,
+        primary = true,
+        trigger_kind = triggerKind,
+        key = key,
+        label = state.debug_label,
+    } or nil
+
+    local handle, bindError = __bindAction(state.target, actionPath, "Triggered", function(event)
         event.key = key
         event.trigger = trigger
+        event.scope_id = state.scope_id
+        event.binding_id = bindingId
         local callbackOk, callbackError = xpcall(callback, __traceback, event)
         if not callbackOk then
             record.callback_failed = true
             error(callbackError, 0)
         end
-    end)
+    end, trace)
     if handle == nil then
         local removed, removeError = __removeContext(state, record)
         if not removed then state.orphans[#state.orphans + 1] = record end
@@ -392,6 +488,41 @@ function __scopeMethods:Bind(key, trigger, callback, options)
     end
 
     record.native_handle = handle
+    record.native_handles[#record.native_handles + 1] = handle
+
+    if state.debug then
+        for _, phase in ipairs({ "Started", "Completed", "Canceled" }) do
+            local observerTrace = {
+                scope_id = state.scope_id,
+                binding_id = bindingId,
+                primary = false,
+                trigger_kind = triggerKind,
+                key = key,
+                label = state.debug_label,
+            }
+            local observerHandle, observerError = __bindAction(
+                state.target, actionPath, phase, function() end, observerTrace)
+            if observerHandle == nil then
+                local removed, removeError = __removeRecord(state, record)
+                if not removed then state.orphans[#state.orphans + 1] = record end
+                local message = "failed to create debug " .. phase
+                    .. " observer: " .. tostring(observerError)
+                return nil, message .. (removeError and "; " .. removeError or "")
+            end
+            record.native_handles[#record.native_handles + 1] = observerHandle
+        end
+    end
+
+    record.context_added = true
+    local contextAdded, addError = pcall(function()
+        state.subsystem:AddMappingContext(context, state.mapping_priority, {})
+    end)
+    if not contextAdded then
+        local removed, removeError = __removeRecord(state, record)
+        if not removed then state.orphans[#state.orphans + 1] = record end
+        local message = "failed to add private Input Mapping Context: " .. tostring(addError)
+        return nil, message .. (removeError and "; " .. removeError or "")
+    end
     state.bindings[handle] = record
     return handle
 end
@@ -434,7 +565,7 @@ function __scopeMethods:Close()
 
     local remainingOrphans = {}
     for _, record in ipairs(state.orphans) do
-        local removed, removeError = __removeContext(state, record)
+        local removed, removeError = __removeRecord(state, record)
         if not removed then
             remainingOrphans[#remainingOrphans + 1] = record
             errors[#errors + 1] = removeError
@@ -443,10 +574,12 @@ function __scopeMethods:Close()
     state.orphans = remainingOrphans
 
     if #errors > 0 then return false, table.concat(errors, "; ") end
-    if not bridge.CloseInputComponent(state.target) then
-        return false, "failed to close Input Component; run cleanup on the Unreal game thread"
+    local closed, closeError = bridge.CloseInputComponent(state.target)
+    if not closed then
+        return false, closeError or "failed to close Input Component"
     end
 
+    __traceScope(state, 2)
     state.closed = true
     state.target = nil
     state.subsystem = nil
@@ -471,6 +604,14 @@ function Helpers.OpenInput(options)
         and mappingPriority >= -2147483648 and mappingPriority <= 2147483647,
         "mapping_priority must be a 32-bit integer")
 
+    local debugEnabled = options.debug
+    if debugEnabled == nil then debugEnabled = false end
+    assert(type(debugEnabled) == "boolean", "debug must be a boolean")
+    local debugLabel = options.debug_label
+    if debugLabel == nil then debugLabel = "input" end
+    assert(type(debugLabel) == "string" and #debugLabel > 0 and #debugLabel <= 64,
+        "debug_label must be a 1..64 byte string")
+
     local target, openError = bridge.OpenInputComponent(options.component_path)
     if target == nil then return nil, openError end
 
@@ -479,21 +620,30 @@ function Helpers.OpenInput(options)
         "/Script/EnhancedInput.EnhancedInputLocalPlayerSubsystem",
         "subsystem_path")
     if subsystem == nil then
-        local closed = bridge.CloseInputComponent(target)
-        if not closed then subsystemError = subsystemError .. "; failed to close opened component" end
+        local closed, closeError = bridge.CloseInputComponent(target)
+        if not closed then
+            subsystemError = subsystemError .. "; "
+                .. (closeError or "failed to close opened component")
+        end
         return nil, subsystemError
     end
 
     local scope = setmetatable({}, __scopeMetatable)
-    __scopeStates[scope] = {
+    __nextScopeId = __nextScopeId + 1
+    local state = {
         target = target,
         subsystem = subsystem,
         mapping_priority = mappingPriority,
+        scope_id = __nextScopeId,
+        debug = debugEnabled,
+        debug_label = debugLabel,
         bindings = {},
         orphans = {},
         closed = false,
     }
+    __scopeStates[scope] = state
     __inputScopes[scope] = true
+    __traceScope(state, 1)
     return scope
 end
 
@@ -523,10 +673,22 @@ local function __closeHelperScopes()
 end
 
 bridge.UnbindAll = function()
-    local _helpersClosed, _helperError, helperCount = __closeHelperScopes()
-    local count, completed = UE4SSLuaEventBridge_UnbindAll(__session)
+    local helpersClosed, helperError, helperCount = __closeHelperScopes()
+    local count, completed, nativeError = UE4SSLuaEventBridge_UnbindAll(__session)
+    count = count or 0
     if completed then __clearCallbacks() end
-    return helperCount + count
+
+    local errors = {}
+    if not helpersClosed then
+        errors[#errors + 1] = helperError or "failed to close helper input scopes"
+    end
+    if not completed then
+        errors[#errors + 1] = nativeError or "native UnbindAll did not complete"
+    end
+    if #errors > 0 then
+        return helperCount + count, false, table.concat(errors, "; ")
+    end
+    return helperCount + count, true
 end
 
 bridge.UnsubscribeAll = bridge.UnbindAll

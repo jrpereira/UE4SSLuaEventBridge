@@ -88,6 +88,14 @@ mod off-thread while any such object remains under Unreal ownership, the DLL
 adds a process-lifetime module reference. This intentionally trades a bounded
 module residency for avoiding a dangling vtable after `FreeLibrary`.
 
+Debug trace records use a separate queue in the same shared dispatch state.
+Native stages capture their event sequence and thread information before the
+record is queued. `on_update` prints those records through the owning Lua
+session's existing dispatcher, independently of the developer callback.
+`OutputDebugString` receives the same line immediately as a debugger fallback.
+Trace queues stop accepting records during backend shutdown and are cleared
+before retained Lua session storage is released.
+
 ## Deliberate exclusions
 
 - no player-controller or pawn discovery;
@@ -101,7 +109,7 @@ The Lua caller owns target selection, rebinding, and unbinding policy.
 
 ## Helper layer boundary
 
-Version 0.3.2's `Helpers.OpenInput` layer is shipped in the bridge's embedded
+Version 0.3.3's `Helpers.OpenInput` layer is shipped in the bridge's embedded
 Lua API. It uses UE4SS object construction and ordinary reflected Enhanced
 Input calls to create transient mapping contexts, Input Actions, and Tap/Hold
 triggers. The ABI-pinned native backend remains responsible only for explicit
@@ -110,5 +118,8 @@ safe detachment.
 
 Each helper binding uses a private mapping context. This keeps rollback and
 unbind ownership local to one handle and avoids editing an already-active
-shared context. Helper-created actions default to non-consuming input. The
-helper layer adds no discovery, hook, scan, polling loop, or game-state policy.
+shared context. Mapping activation occurs only after all required native
+subscriptions have attached. A debug-enabled binding adds phase observers that
+share the logical helper binding ID and are removed as part of the same
+lifecycle. Helper-created actions default to non-consuming input. The helper
+layer adds no discovery, hook, scan, polling loop, or game-state policy.
