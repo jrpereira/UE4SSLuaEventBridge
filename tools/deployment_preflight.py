@@ -27,7 +27,8 @@ def compare(manifest, staged, deployed, session=None, working=None, definition=N
     for relative, expected in manifest['files'].items():
         if digest(safe_file(staged, relative)) != expected:
             stage_errors.append(relative)
-        if digest(safe_file(deployed, relative)) != expected:
+        # Deployment preserves enablement independently of the packaged default.
+        if relative != 'enabled.txt' and digest(safe_file(deployed, relative)) != expected:
             changes.append(relative)
         if working is not None:
             source = definition['files'].get(relative) if definition else relative

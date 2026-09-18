@@ -52,6 +52,10 @@ files. Close the game before replacing files and preserve personal settings and
 enablement. The deployment tooling checks whether the game is running; it does
 not inspect loaded modules, read game logs or query a diagnostic bridge.
 
+Deployment never creates `enabled.txt`, including on a fresh installation. An
+existing marker is preserved. Enable the mod separately when desired; preflight
+does not treat user-controlled enablement as a payload mismatch.
+
 Use `tools/deployment_preflight.py` for on-disk comparisons and
 `tools/release_session.py` for guarded deployment or launch. Deployment backups
 belong outside the public repository and payload directories. Package hashes

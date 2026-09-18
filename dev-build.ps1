@@ -28,5 +28,6 @@ try {
             } finally { Pop-Location }
         }
         Invoke-Checked $lua @('tests/LuaHelperTests.lua')
+        Invoke-Checked $lua @('tests/LifecycleIntegrationTests.lua')
     }
 } finally { Pop-Location }

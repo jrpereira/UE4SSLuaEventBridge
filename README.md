@@ -151,6 +151,7 @@ Mods/
 - [`docs/ENHANCED_INPUT_BACKEND.md`](docs/ENHANCED_INPUT_BACKEND.md) — ABI,
   ownership, and lifetime model
 - [`docs/BUILD.md`](docs/BUILD.md) — ABI-pinned build requirements
+- [`docs/LIFECYCLE-TESTS.md`](docs/LIFECYCLE-TESTS.md) — lifecycle regression coverage and runtime validation limits
 - [`docs/BINDING_SNAPSHOT.md`](docs/BINDING_SNAPSHOT.md) — on-demand binding inspection
 - [`examples/EnhancedInputTapHold`](examples/EnhancedInputTapHold) — complete
   game-agnostic F10 Tap/Hold sample mod

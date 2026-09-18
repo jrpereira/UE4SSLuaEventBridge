@@ -70,7 +70,8 @@ def deploy(manifest, staged, deployed, records, session_provider=game_session):
             target = safe_file(deployed, relative)
             if digest(target) != original.get(relative):
                 raise RuntimeError('Concurrent destination change: '+relative)
-            if relative == 'enabled.txt' and target.exists():
+            # Enablement is user-owned, including an absent marker on fresh installs.
+            if relative == 'enabled.txt':
                 continue
             if digest(target) != expected:
                 source = safe_file(staged, relative)
