@@ -85,8 +85,10 @@ Keep `AllowVGPU=0` on this host: the user confirmed it fixes Sandbox startup cra
 Pass `-DisableVGpu` explicitly. Software rendering is suitable for matching relative
 
 runs, with rendering load and timing variability reported. The historical sample covers
-the earlier drain-all bridge. The new budgeted dispatch implementation still needs
-its own isolated integration run; offline tests do not extend that sample's evidence.
+the earlier drain-all bridge. A separate single Bridge/Baseline pair with the rc.2
+budgeted build completed 600/600 callbacks in each mode. That validates ordinary
+input delivery for the tested fixture; it does not establish sustained-overload,
+shutdown or general gameplay performance guarantees.
 
 ## Usage from the repository
 

@@ -6,14 +6,16 @@ import sys
 from repository_hygiene import check, git
 
 root = Path.cwd()
-revisions = ['HEAD']
+revisions = [] if '--pre-push' in sys.argv else ['HEAD']
 if '--pre-push' in sys.argv:
     for line in sys.stdin:
         local_ref, local_sha, remote_ref, remote_sha = line.split()
         if set(local_sha) == {'0'}:
             continue
         if set(remote_sha) == {'0'}:
-            args = ['rev-list', local_sha, '--not', '--remotes']
+            # Another remote knowing a commit does not prove this destination
+            # already contains it. Inspect all ancestry for a new target ref.
+            args = ['rev-list', local_sha]
         else:
             args = ['rev-list', f'{remote_sha}..{local_sha}']
         revisions.extend(git(root, *args).decode().splitlines())

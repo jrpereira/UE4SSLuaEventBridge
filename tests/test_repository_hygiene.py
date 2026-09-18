@@ -46,6 +46,16 @@ class HygieneTests(unittest.TestCase):
             self.assertFalse(hygiene.check(root, ["HEAD"]))
             commits = git("rev-list", f"{base}..HEAD").decode().splitlines()
             self.assertTrue(hygiene.check(root, commits))
+            # A second remote must not exempt unsafe history on a new public ref.
+            head = git('rev-parse', 'HEAD').decode().strip()
+            git('update-ref', 'refs/remotes/other/main', head)
+            driver = Path(__file__).resolve().parents[1] / 'tools/check_incoming_history.py'
+            import sys
+            pushed = subprocess.run([sys.executable, str(driver), '--pre-push'],
+                cwd=root, input=f'refs/heads/main {head} refs/heads/new-public {"0"*40}\n',
+                text=True, capture_output=True)
+            self.assertEqual(pushed.returncode, 1, pushed.stdout+pushed.stderr)
+            self.assertIn('config.ini', pushed.stdout)
 
 if __name__ == "__main__":
     unittest.main()

@@ -71,19 +71,49 @@ def policy_at(root, revision):
         return ['distribution/config.ini']
     return json.loads(git(root, 'cat-file', 'blob', oid))['allowed_paths']
 
+def blobs(root, object_ids):
+    ids = sorted(set(object_ids))
+    if not ids:
+        return {}
+    raw = subprocess.check_output(['git','-C',str(root),'cat-file','--batch'],
+                                  input=('\n'.join(ids)+'\n').encode('ascii'))
+    result, cursor = {}, 0
+    for oid in ids:
+        end = raw.index(b'\n', cursor)
+        found, kind, size = raw[cursor:end].split()
+        if found.decode() != oid or kind != b'blob':
+            raise ValueError('Unexpected Git object response')
+        cursor = end + 1
+        length = int(size)
+        result[oid] = raw[cursor:cursor+length]
+        cursor += length + 1
+    return result
+
 def check(root, revisions, allowed=None):
     failures = []
     seen = set()
-    for revision in revisions:
-        revision_allowed = policy_at(root, revision) if allowed is None else allowed
-        for path, oid in entries(root, revision):
+    trees = {rev: dict(entries(root, rev)) for rev in revisions}
+    policies = blobs(root, [tree['repository-policy.json'] for tree in trees.values() if 'repository-policy.json' in tree])
+    pending = []
+    for revision, tree in trees.items():
+        revision_allowed = allowed
+        if revision_allowed is None:
+            policy = tree.get('repository-policy.json')
+            revision_allowed = json.loads(policies[policy])['allowed_paths'] if policy else ['distribution/config.ini']
+        for path, oid in tree.items():
             key = (path, oid, tuple(sorted(revision_allowed)))
             if key in seen:
                 continue
             seen.add(key)
-            data = git(root, "cat-file", "blob", oid)
-            for reason in violations(path, data, revision_allowed):
+            reasons = violations(path, b'', revision_allowed)
+            for reason in reasons:
                 failures.append(f"{revision}: {path}: {reason}")
+            if not reasons:
+                pending.append((revision, path, oid, revision_allowed))
+    contents = blobs(root, [item[2] for item in pending])
+    for revision, path, oid, revision_allowed in pending:
+        for reason in violations(path, contents[oid], revision_allowed):
+            failures.append(f"{revision}: {path}: {reason}")
     return failures
 
 def main():

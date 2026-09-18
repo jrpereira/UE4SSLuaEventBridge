@@ -51,3 +51,19 @@ unverified, and equal version labels do not prove equal contents. Offer correcti
 (close, deploy with config preservation, relaunch) or ignore for this launch.
 Do this on demand; do not add gameplay polling or a production dependency on the
 diagnostic helper.
+
+Example preflight after extracting a tested package into an ignored staging area:
+
+```sh
+python tools/deployment_preflight.py --manifest stage/MODULE/manifest.json --staged stage/MODULE --deployed /path/to/Mods/MODULE --working . --definition release-manifest.json --working-version CURRENT_VERSION
+```
+
+Replace module, version and paths with current evidence. The source definition maps
+clean defaults to their installed example paths. A native DLL must be checked against
+its tested build output and build metadata; do not compare C++ source bytes to a DLL.
+On Windows the CLI detects a running Dawnwalker process. Runtime evidence can be
+supplied with `--runtime-evidence`; it must include the same PID and process-start
+identity as the detected session. `--session` is for an explicitly established fresh
+session identity or isolated tests. Neither option makes stale evidence authoritative.
+Exit 2 means attention is required. The tool presents choices but performs no
+deployment, restart or input. An ignore choice is for this launch, not a saved bypass.

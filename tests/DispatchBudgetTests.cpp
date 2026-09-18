@@ -1,6 +1,7 @@
 #include <UE4SSLuaEventBridge/DispatchBudget.hpp>
 #include <UE4SSLuaEventBridge/QueueCapacity.hpp>
 #include <UE4SSLuaEventBridge/DispatchBacklog.hpp>
+#include <UE4SSLuaEventBridge/QueueBuffers.hpp>
 #include <cassert>
 #include <chrono>
 #include <deque>
@@ -61,4 +62,53 @@ int main() {
     next.push_back(std::make_unique<int>(1000));
     backlog.load(std::move(next));
     assert(*backlog.pop()==1000);
+
+    // Exercise the production buffer/capacity/backlog components together under
+    // sustained overload. Accepted IDs must survive partial passes exactly once
+    // and in order, even while the producer fills a second batch.
+    QueueCapacity bounded{11};
+    std::vector<int> events, spare, accepted_ids, delivered_ids;
+    DispatchBacklog<int> pending;
+    QueueReadiness ready;
+    auto dispatch = [&] {
+        if (pending.empty()) {
+            auto buffer = pending.release_buffer();
+            buffer.clear();
+            retain_empty_buffer(spare, buffer);
+            if (ready.pending()) {
+                pending.load(drain_queue(events, spare));
+                ready.drained();
+            }
+        }
+        DispatchBudget pass(zero, 3, 0us);
+        std::size_t count{};
+        while (!pending.empty() && pass.permits(count, zero)) {
+            delivered_ids.push_back(pending.pop());
+            ++count;
+        }
+        assert(count <= 3);
+    };
+    for (int id = 0; id < 10000; ++id) {
+        if (bounded.admit(events.size())) {
+            events.push_back(id);
+            accepted_ids.push_back(id);
+            bounded.accepted(events.size());
+            ready.publish();
+        }
+        if (id % 10 == 0) dispatch();
+        assert(events.size() <= bounded.limit);
+        assert(pending.size() <= bounded.limit);
+        assert(events.size() + pending.size() <= 2 * bounded.limit);
+    }
+    assert(bounded.rejected > 0 && bounded.high_water == bounded.limit);
+    assert(accepted_ids.size() + bounded.rejected == 10000);
+    while (ready.pending() || !pending.empty()) dispatch();
+    assert(delivered_ids == accepted_ids);
+    assert(!ready.pending() && events.empty() && pending.empty());
+    // A new burst after complete draining must recover admission and readiness.
+    assert(bounded.admit(events.size()));
+    events.push_back(10000);
+    ready.publish();
+    dispatch();
+    assert(delivered_ids.back() == 10000 && !ready.pending() && pending.empty());
 }
