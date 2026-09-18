@@ -1,0 +1,3 @@
+#!/bin/sh
+set -eu
+python tools/repository_hygiene.py --staged

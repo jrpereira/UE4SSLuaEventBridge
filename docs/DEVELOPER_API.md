@@ -1,6 +1,6 @@
 # Developer API: primitives and helpers
 
-UE4SSLuaEventBridge 0.3.3 exposes two API layers:
+UE4SSLuaEventBridge exposes two API layers:
 
 | Layer | Use it when | Ownership |
 |---|---|---|
@@ -13,7 +13,7 @@ component, or subsystem.
 
 ## Requirements and execution model
 
-Version 0.3.3 targets:
+The current build targets:
 
 - UE4SS 3.0.1 Beta #0 at commit `97b7e501`;
 - Unreal Engine 5.5; and
@@ -48,7 +48,7 @@ local version = UE4SSLuaEventBridge.GetVersion()
 local capabilities = UE4SSLuaEventBridge.GetCapabilities()
 ```
 
-Version 0.3.3 reports:
+The current API reports:
 
 ```lua
 {

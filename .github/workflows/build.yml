@@ -8,7 +8,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
+  repository-hygiene:
+    uses: ./.github/workflows/repository-hygiene.yml
   portable-tests:
     runs-on: ubuntu-latest
     steps:
@@ -17,6 +22,16 @@ jobs:
       - run: bash tests/run-portable-tests.sh
       - run: bash tests/run-lua-tests.sh
       - run: bash tests/run-abi-syntax-test.sh
+      - run: lua5.4 benchmarks/runner/test-consumer.lua Fountain Bridge
+      - run: lua5.4 benchmarks/runner/test-consumer.lua Fountain Baseline
+      - run: lua5.4 benchmarks/runner/test-consumer.lua Fountain Baseline Incomplete
+      - run: python3 benchmarks/runner/test-cycle-summary.py 600
+      - run: python3 benchmarks/runner/test-cycle-summary.py 300
+      - run: python3 benchmarks/runner/test-package.py
+      - shell: pwsh
+        run: ./benchmarks/runner/test-runner-status.ps1
+      - shell: pwsh
+        run: ./benchmarks/runner/test-batch-configuration.ps1
 
   windows-dll:
     runs-on: windows-2022
@@ -25,14 +40,26 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
-      - name: Configure
+      - name: Release tooling tests
+        # Metadata tests need PowerShell only, not the compiler.
+        run: |
+          ./tests/ReleaseMetadataTests.ps1
+          ./tests/PackageReleaseTests.ps1
+          ./benchmarks/runner/test-staging.ps1
+      - name: Configure DLL
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DUE4SSLEB_BUILD_TESTS=OFF
       - name: Build
         run: cmake --build build --config Release
       - name: Package
+        id: metadata
         shell: pwsh
-        run: Compress-Archive -Path build/dist/UE4SSLuaEventBridge -DestinationPath UE4SSLuaEventBridge-v0.3.3.zip
+        run: |
+          $metadata = & ./tools/release-metadata.ps1 -OutputFile $env:GITHUB_OUTPUT
+          & ./tools/package-release.ps1 -Distribution build/dist/UE4SSLuaEventBridge -OutputDirectory . -SourceCommit $env:GITHUB_SHA
       - uses: actions/upload-artifact@v4
         with:
-          name: UE4SSLuaEventBridge-v0.3.3
-          path: UE4SSLuaEventBridge-v0.3.3.zip
+          name: UE4SSLuaEventBridge-${{ steps.metadata.outputs.tag }}
+          path: |
+            ${{ steps.metadata.outputs.archive }}
+            ${{ steps.metadata.outputs.archive }}.manifest.json
+            ${{ steps.metadata.outputs.archive }}.sha256

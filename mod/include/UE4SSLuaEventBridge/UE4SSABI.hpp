@@ -11,7 +11,9 @@
 #include <string_view>
 #include <vector>
 
+#ifndef UE4SS_IMPORT
 #define UE4SS_IMPORT __declspec(dllimport)
+#endif
 
 struct lua_State;
 
@@ -222,10 +224,10 @@ struct FWeakObjectPtr
         std::memcpy(&indexed_object, item_bytes + object_item_object_offset, sizeof(indexed_object));
         std::memcpy(&serial, item_bytes + object_item_serial_offset, sizeof(serial));
 
-        if (indexed_object != object || serial == 0)
-        {
-            return;
-        }
+        if (indexed_object != object) return;
+        // Serial assignment must be performed by Unreal through the helper's
+        // reflected Lua call. The pinned C++ allocator's soft return copy crashes.
+        if (serial <= 0) return;
 
         object_index = index;
         object_serial_number = serial;

@@ -29,12 +29,17 @@ without explicitly validating that its C++ ABI matches `97b7e501`.
 
 ## Tagged releases
 
-Creating a `release/vMAJOR.MINOR.PATCH` branch from the intended release commit
+Pushing a `release/vVERSION` branch from the intended release commit
 runs the full portable checks, verifies that the branch matches the version
-declared in `CMakeLists.txt`, and builds the Windows DLL with MSVC. After those
-steps pass, the workflow creates the matching `vMAJOR.MINOR.PATCH` tag and a
+declared in `mod/include/UE4SSLuaEventBridge/Version.hpp`, and builds the Windows DLL with MSVC. After those
+steps pass, the workflow creates the matching `vVERSION` tag and a
 permanent GitHub release containing the installable ZIP and its SHA-256
 checksum.
+Prerelease suffixes such as `-rc.1` are supported and produce GitHub prereleases.
+Opening a PR runs validation through build.yml and never publishes its unmerged
+head. An explicit workflow dispatch on the matching release branch supports
+publishers whose ref APIs do not emit push events. Existing releases are not
+overwritten; concurrent runs for one ref are serialized.
 
 Add `.github/release-notes/vMAJOR.MINOR.PATCH.md` before tagging to supply a
 curated changelog. If that file is absent, GitHub-generated notes are used.
@@ -42,8 +47,8 @@ curated changelog. If that file is absent, GitHub-generated notes are used.
 ```sh
 git switch main
 git pull --ff-only
-git switch -c release/v0.3.3
-git push origin release/v0.3.3
+git switch -c release/v0.3.4-rc.2
+git push origin release/v0.3.4-rc.2
 ```
 
 ## Portable checks

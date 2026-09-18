@@ -1,0 +1,25 @@
+name: Repository hygiene
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  repository-hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test guards
+        run: |
+          python -m unittest discover -s tests -p test_repository_hygiene.py -v
+          python -m unittest discover -s tests -p test_deployment_preflight.py -v
+          python -m unittest discover -s tests -p test_manifest_package.py -v
+      - name: Check tree and introduced commits
+        run: python tools/check_incoming_history.py

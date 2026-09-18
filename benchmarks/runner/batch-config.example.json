@@ -1,0 +1,14 @@
+{
+  "ApplicationUrl": "https://example.invalid/user-selected-sample.zip",
+  "ApplicationArchive": "build/sandbox-inputs/sample.zip",
+  "ApplicationSha256": "REPLACE_WITH_ARCHIVE_SHA256",
+  "UE4SSArchive": "build/sandbox-inputs/ue4ss.zip",
+  "UE4SSSha256": "REPLACE_WITH_PINNED_UE4SS_SHA256",
+  "BridgeDll": "build/sandbox-layout128/dist/UE4SSLuaEventBridge/dlls/main.dll",
+  "Adapter": "benchmarks/runner/adapter.lua",
+  "Executable": "Sample/Binaries/Win64/Sample-Win64-Shipping.exe",
+  "ApplicationArguments": ["-nullrhi", "-nosound"],
+  "MemoryMB": 32768,
+  "DisableVGpu": true,
+  "PassesPerSecond": 50
+}
