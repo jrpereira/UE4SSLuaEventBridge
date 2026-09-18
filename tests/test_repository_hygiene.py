@@ -22,6 +22,15 @@ class HygieneTests(unittest.TestCase):
         key = b"-----BEGIN " + b"PRIVATE KEY-----"
         self.assertTrue(hygiene.violations(path, key, [path]))
 
+    def test_diagnostic_tools_and_evidence_are_private(self):
+        for path in ['tools/runtime_evidence.py', 'tests/test_runtime_evidence.py',
+                     'docs/RECONSTRUCTED_HISTORY.json', 'diagnostics/helper.py',
+                     'evidence/session.json']:
+            with self.subTest(path=path):
+                self.assertTrue(hygiene.violations(path, b''))
+        self.assertFalse(hygiene.violations('Scripts/main.lua', b''))
+        self.assertFalse(hygiene.violations('release-manifest.json', b''))
+
     def test_index_and_deleted_historical_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

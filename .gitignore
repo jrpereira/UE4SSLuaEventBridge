@@ -18,7 +18,7 @@ dumps/
 reports/
 audits/
 internal/
-/benchmarks/runner/samples/
+/benchmarks/
 CONTINUATION.md
 CURRENT-MODEL.md
 SAMPLE_RUNS.md
@@ -59,3 +59,11 @@ config.ini
 .env*
 !.env.example
 !.env.sample
+
+# Developer diagnostics and evidence stay private
+diagnostics/
+evidence/
+runtime_evidence.py
+test_runtime_evidence.py
+reconstructed_history.json
+/examples/CapabilityProbe/

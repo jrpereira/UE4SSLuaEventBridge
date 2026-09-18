@@ -22,6 +22,8 @@ def violations(path, data, allowed=()):
         parts = [s.lower() for s in p.parts]
         name = parts[-1]
         result = []
+        if any(s in {'diagnostics', 'evidence'} for s in parts[:-1]) or name in {'runtime_evidence.py', 'test_runtime_evidence.py', 'reconstructed_history.json'}:
+            result.append('diagnostic tooling and evidence belong outside public source')
         if any(s in FORBIDDEN_DIRS for s in parts[:-1]):
             result.append("generated/local output directory")
         if path.lower().startswith('benchmarks/runner/samples/'):
