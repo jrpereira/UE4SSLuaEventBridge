@@ -32,6 +32,20 @@ class ReleaseSessionTests(unittest.TestCase):
             self.assertEqual((backup/'before/main.lua').read_text(), 'old code')
             self.assertIn('"status": "deployed"', (backup/'result.json').read_text())
 
+    def test_deployment_never_creates_enablement_marker(self):
+        for fresh in (False, True):
+            with self.subTest(fresh=fresh), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                staged, installed, manifest = self.fixture(root)
+                (installed/'enabled.txt').unlink()
+                if fresh:
+                    installed = root/'fresh-install'
+                session.deploy(manifest, staged, installed, root/'records', lambda:None)
+                self.assertEqual((installed/'main.lua').read_text(), 'new code')
+                self.assertFalse((installed/'enabled.txt').exists())
+                result = session.compare(manifest, staged, installed)
+                self.assertFalse(result['needs_attention'])
+
     def test_running_game_and_tampered_stage_never_deploy(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
