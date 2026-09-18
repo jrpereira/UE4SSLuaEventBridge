@@ -1,5 +1,16 @@
 # Development and release rules
 
+Module owners retain implementation and regression responsibility. Coordinate
+shared contracts, repository changes and overlapping live operations with the
+project coordinator. Report user requests to the coordinator only when they
+affect shared goals or work; do not relay unrelated interactions.
+
+Machine-specific ownership and internal-record locations may be documented in an
+external file named by the local Git setting `bdw.localInstructions`. Read that
+file when configured. Keep it outside public source; direct user instructions
+take precedence. Preserve exact archived version labels as evidence while using
+clear public milestone names (ExtendedControls omits the old `-native` suffix).
+
 - Keep source, tests, maintained public documentation and reviewed defaults in Git.
   Keep personal settings, generated installers/archives, logs, data dumps, internal
   audits and investigation notes outside the public repository. Consult
