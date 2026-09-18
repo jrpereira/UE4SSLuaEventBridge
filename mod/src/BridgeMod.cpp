@@ -1,7 +1,11 @@
 #include <UE4SSLuaEventBridge/EnhancedInputBackend.hpp>
 #include <UE4SSLuaEventBridge/EmbeddedLuaAPI.hpp>
 #include <UE4SSLuaEventBridge/SessionAliasIndex.hpp>
+#include <UE4SSLuaEventBridge/QueueDispatchSchedule.hpp>
 #include <UE4SSLuaEventBridge/UE4SSABI.hpp>
+#include <UE4SSLuaEventBridge/Version.hpp>
+#include <UE4SSLuaEventBridge/DispatchBudget.hpp>
+#include <UE4SSLuaEventBridge/DispatchBacklog.hpp>
 
 #include <array>
 #include <atomic>
@@ -25,6 +29,9 @@ extern "C" __declspec(dllimport) int UE4SSLEB_WINAPI GetModuleHandleExW(
     unsigned long flags,
     const wchar_t* module_address,
     void** module);
+
+extern "C" __declspec(dllimport) unsigned long UE4SSLEB_WINAPI GetEnvironmentVariableA(
+    const char* name, char* buffer, unsigned long size);
 
 #undef UE4SSLEB_WINAPI
 
@@ -51,6 +58,25 @@ constexpr int32_t packed_debug_max_length = packed_debug_word_count * 8;
 
 class UE4SSLuaEventBridgeMod;
 UE4SSLuaEventBridgeMod* active_mod{};
+
+uint32_t configured_queue_check_rate()
+{
+    std::array<char, 32> value{};
+    const auto size = GetEnvironmentVariableA(
+        "UE4SSLEB_QUEUE_CHECKS_PER_SECOND", value.data(), static_cast<unsigned long>(value.size()));
+    if (size == 0 || size >= value.size()) return UE4SSLuaEventBridge::default_queue_checks_per_second;
+    return UE4SSLuaEventBridge::parse_queue_check_rate(std::string_view(value.data(), size));
+}
+
+uint32_t configured_limit(const char* name, uint32_t fallback, uint32_t maximum)
+{
+    std::array<char, 32> value{};
+    const auto size = GetEnvironmentVariableA(name, value.data(), static_cast<unsigned long>(value.size()));
+    if (size == 0 || size >= value.size()) return fallback;
+    uint32_t result{};
+    const auto parsed = std::from_chars(value.data(), value.data() + size, result);
+    return parsed.ec == std::errc{} && parsed.ptr == value.data() + size && result <= maximum ? result : fallback;
+}
 
 bool pin_current_module()
 {
@@ -122,7 +148,7 @@ public:
     UE4SSLuaEventBridgeMod()
     {
         ModName = L"UE4SSLuaEventBridge";
-        ModVersion = L"0.3.3";
+        ModVersion = UE4SSLEB_WIDEN(UE4SSLEB_VERSION);
         ModDescription = L"Game-agnostic native Enhanced Input callbacks for UE4SS Lua mods";
         ModAuthors = L"UE4SS Lua Event Bridge contributors";
         ModIntendedSDKVersion = L"3.0.1-97b7e501";
@@ -137,14 +163,26 @@ public:
 
     [[nodiscard]] bool prepare_for_unload() { return backend_.shutdown(); }
 
-    void on_unreal_init() override { backend_.initialize(); }
+    void on_unreal_init() override {
+        backend_.set_queue_limit(configured_limit("UE4SSLEB_MAX_QUEUED_EVENTS", 65536, 1000000));
+        backend_.initialize();
+    }
 
     void on_update() override
     {
-        flush_debug_traces();
-        for (auto& event : backend_.take_events())
+        if (!queue_schedule_.due(UE4SSLuaEventBridge::QueueDispatchSchedule::Clock::now())) return;
+        if (pending_events_.empty())
         {
-            flush_debug_traces();
+            backend_.recycle_events(pending_events_.release_buffer());
+            pending_events_.load(backend_.take_events());
+        }
+        using Budget = UE4SSLuaEventBridge::DispatchBudget;
+        const Budget budget(Budget::Clock::now(), max_events_per_pass_, std::chrono::microseconds(max_dispatch_us_));
+        std::size_t processed{};
+        while (!pending_events_.empty() && budget.permits(processed, Budget::Clock::now()))
+        {
+            auto event = pending_events_.pop();
+            ++processed;
             const auto& subscription = event.owner;
             auto* session = subscription ? subscription->session : nullptr;
             if (!subscription)
@@ -162,7 +200,6 @@ public:
                         subscription->phase_name,
                         event.sequence,
                         "binding_inactive");
-                    flush_debug_traces();
                 }
                 continue;
             }
@@ -177,7 +214,6 @@ public:
                         subscription->phase_name,
                         event.sequence,
                         "lua_session_inactive");
-                    flush_debug_traces();
                 }
                 continue;
             }
@@ -190,7 +226,6 @@ public:
                     "lua_callback_started",
                     subscription->phase_name,
                     event.sequence);
-                flush_debug_traces();
                 const auto& lua = *session->lua;
                 lua.registry().get_function_ref(session->dispatcher_ref);
                 lua.set_integer(static_cast<int64_t>(subscription->callback_token));
@@ -211,7 +246,6 @@ public:
                     "lua_callback_completed",
                     subscription->phase_name,
                     event.sequence);
-                flush_debug_traces();
             }
             catch (const std::exception& callback_error)
             {
@@ -222,7 +256,6 @@ public:
                     subscription->phase_name,
                     event.sequence,
                     callback_error.what());
-                flush_debug_traces();
                 // Lua callbacks run on UE4SS's event-loop thread. Deactivate
                 // immediately, then let the next game-thread bridge operation
                 // detach the native binding.
@@ -237,7 +270,6 @@ public:
                     subscription->phase_name,
                     event.sequence,
                     "unknown_lua_exception");
-                flush_debug_traces();
                 backend_.deactivate(*session, subscription->id);
             }
         }
@@ -252,10 +284,12 @@ public:
         auto* session_ptr = session.get();
 
         lua.register_function("UE4SSLuaEventBridge_GetVersion", &get_version);
+        lua.register_function("UE4SSLuaEventBridge_GetDispatchStats", &get_dispatch_stats);
         lua.register_function("UE4SSLuaEventBridge_GetCapabilities", &get_capabilities);
         lua.register_function("UE4SSLuaEventBridge_IsInGameThread", &is_in_game_thread);
         lua.register_function("UE4SSLuaEventBridge_OpenInputComponent", &open_input_component);
         lua.register_function("UE4SSLuaEventBridge_CloseInputComponent", &close_input_component);
+        lua.register_function("UE4SSLuaEventBridge_InspectInputComponent", &inspect_input_component);
         lua.register_function("UE4SSLuaEventBridge_BindAction", &bind_action);
         lua.register_function("UE4SSLuaEventBridge_Unbind", &unbind);
         lua.register_function("UE4SSLuaEventBridge_UnbindAll", &unbind_all);
@@ -362,10 +396,26 @@ public:
     }
 
 private:
+    UE4SSLuaEventBridge::QueueDispatchSchedule queue_schedule_{configured_queue_check_rate()};
+    const uint32_t max_events_per_pass_{configured_limit("UE4SSLEB_MAX_EVENTS_PER_PASS", 256, 1000000)};
+    const uint32_t max_dispatch_us_{configured_limit("UE4SSLEB_MAX_DISPATCH_US", 2000, 1000000)};
+    UE4SSLuaEventBridge::DispatchBacklog<UE4SSLuaEventBridge::EnhancedInputEvent> pending_events_;
+    UE4SSLuaEventBridge::DispatchBacklog<UE4SSLuaEventBridge::EnhancedInputTrace> pending_traces_;
+
     void flush_debug_traces()
     {
-        for (auto& trace : backend_.take_traces())
+        if (pending_traces_.empty())
         {
+            backend_.recycle_traces(pending_traces_.release_buffer());
+            pending_traces_.load(backend_.take_traces());
+        }
+        using Budget = UE4SSLuaEventBridge::DispatchBudget;
+        const Budget budget(Budget::Clock::now(), 32, std::chrono::microseconds(250));
+        std::size_t processed{};
+        while (!pending_traces_.empty() && budget.permits(processed, Budget::Clock::now()))
+        {
+            auto trace = pending_traces_.pop();
+            ++processed;
             auto* session = trace.session;
             if (!session || !session->active.load(std::memory_order_acquire) || !session->lua)
             {
@@ -389,8 +439,19 @@ private:
 
     static int get_version(const Lua& lua)
     {
-        lua.set_string("0.3.3");
+        lua.set_string(UE4SSLEB_VERSION);
         return 1;
+    }
+
+    static int get_dispatch_stats(const Lua& lua)
+    {
+        if (!active_mod) { lua.set_nil(); return 1; }
+        const auto stats = active_mod->backend_.queue_stats();
+        lua.set_integer(static_cast<int64_t>(stats.queued));
+        lua.set_integer(static_cast<int64_t>(stats.high_water));
+        lua.set_integer(static_cast<int64_t>(stats.rejected));
+        lua.set_integer(static_cast<int64_t>(stats.traces_rejected));
+        return 4;
     }
 
     static int get_capabilities(const Lua& lua)
@@ -405,7 +466,8 @@ private:
         lua.set_bool(true);
         lua.set_bool(true);
         lua.set_string("97b7e501");
-        return 10;
+        lua.set_bool(true); // Additive binding_snapshot capability.
+        return 11;
     }
 
     static int is_in_game_thread(const Lua& lua)
@@ -477,6 +539,24 @@ private:
 
         lua.set_integer(static_cast<int64_t>(handle));
         return 1;
+    }
+
+    static int inspect_input_component(const Lua& lua)
+    {
+        const auto fail = [&](std::string_view error) { lua.set_nil(); lua.set_string(error); return 2; };
+        if (!active_mod || !active_mod->backend_.available()) return fail("Enhanced Input backend is not initialized");
+        if (!RC::Unreal::IsInGameThread()) return fail("InspectInputComponent must run on the Unreal game thread");
+        auto* session = consume_session(lua);
+        if (!session) return fail("Lua session is not registered or is stopping");
+        const auto target = lua.get_integer(1);
+        if (target <= 0) return fail("invalid Enhanced Input target handle");
+        try {
+            auto [snapshot, error] = active_mod->backend_.inspect_target(*session, static_cast<uint64_t>(target));
+            if (!error.empty()) return fail(error);
+            lua.set_string(snapshot);
+            return 1;
+        } catch (const std::exception& error) { return fail(error.what()); }
+        catch (...) { return fail("binding snapshot failed"); }
     }
 
     static int close_input_component(const Lua& lua)

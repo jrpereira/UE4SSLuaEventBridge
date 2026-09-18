@@ -3,6 +3,9 @@
 #ifdef _WIN32
 
 #include <algorithm>
+#include <UE4SSLuaEventBridge/QueueBuffers.hpp>
+#include <sstream>
+#include <UE4SSLuaEventBridge/BindingSnapshot.hpp>
 #include <cstring>
 #include <new>
 #include <string_view>
@@ -16,6 +19,9 @@
 
 extern "C" __declspec(dllimport) unsigned long UE4SSLEB_WINAPI GetCurrentThreadId();
 extern "C" __declspec(dllimport) void UE4SSLEB_WINAPI OutputDebugStringA(const char* output);
+
+extern "C" __declspec(dllimport) void* UE4SSLEB_WINAPI GetCurrentProcess();
+extern "C" __declspec(dllimport) int UE4SSLEB_WINAPI ReadProcessMemory(void*, const void*, void*, std::size_t, std::size_t*);
 
 #undef UE4SSLEB_WINAPI
 
@@ -123,7 +129,10 @@ void write_debug_trace(
         std::scoped_lock lock(dispatch_state->mutex);
         if (dispatch_state->accepting.load(std::memory_order_acquire))
         {
+            if (!dispatch_state->trace_capacity.admit(dispatch_state->traces.size())) return;
             dispatch_state->traces.push_back({session, std::move(line)});
+            dispatch_state->trace_capacity.accepted(dispatch_state->traces.size());
+            dispatch_state->traces_ready.publish();
         }
     }
     catch (...)
@@ -239,8 +248,27 @@ public:
                 }
                 else
                 {
-                    dispatch_state_->events.push_back(std::move(queued));
-                    accepted = true;
+                    if (dispatch_state_->event_capacity.admit(dispatch_state_->events.size()))
+                    {
+                        dispatch_state_->events.push_back(std::move(queued));
+                        dispatch_state_->event_capacity.accepted(dispatch_state_->events.size());
+                        dispatch_state_->events_ready.publish();
+                        accepted = true;
+                    }
+                    else
+                    {
+                        rejection_reason = "queue_capacity_exceeded";
+                        // One visible diagnostic per overflow episode, even with
+                        // debug disabled. Never execute Lua on this producer.
+                        if (dispatch_state_->event_capacity.warning_pending &&
+                            dispatch_state_->trace_capacity.admit(dispatch_state_->traces.size()))
+                        {
+                            dispatch_state_->traces.push_back({owner_->session,
+                                "[UE4SSLuaEventBridge][ERROR] Event queue capacity exceeded; newest input events rejected. Inspect GetDispatchStats()."});
+                            dispatch_state_->traces_ready.publish();
+                            dispatch_state_->event_capacity.warning_pending = false;
+                        }
+                    }
                 }
             }
             if (accepted)
@@ -266,6 +294,8 @@ public:
                 "event_rejected", owner_->phase_name, sequence, "queue_exception");
         }
     }
+
+    const uint32_t* handle_address() const { return &handle; }
 
     UObject* GetUObject() const override { return nullptr; }
     bool IsBoundToObject(const void*) const override { return false; }
@@ -307,6 +337,19 @@ void EnhancedInputBackend::initialize()
     initialized_.store(true, std::memory_order_release);
 }
 
+void EnhancedInputBackend::set_queue_limit(std::size_t limit)
+{
+    std::scoped_lock lock(dispatch_state_->mutex);
+    dispatch_state_->event_capacity.limit = limit;
+}
+
+EnhancedInputBackend::QueueStats EnhancedInputBackend::queue_stats() const
+{
+    std::scoped_lock lock(dispatch_state_->mutex);
+    return {dispatch_state_->events.size(), dispatch_state_->event_capacity.high_water,
+        dispatch_state_->event_capacity.rejected, dispatch_state_->trace_capacity.rejected};
+}
+
 bool EnhancedInputBackend::shutdown()
 {
     if (!initialized_.exchange(false, std::memory_order_acq_rel))
@@ -341,20 +384,30 @@ bool EnhancedInputBackend::shutdown()
         std::scoped_lock event_lock(dispatch_state_->mutex);
         dispatch_state_->events.clear();
         dispatch_state_->traces.clear();
+        dispatch_state_->events_ready.drained();
+        dispatch_state_->traces_ready.drained();
     }
     return !requires_module_pin &&
            dispatch_state_->live_bindings.load(std::memory_order_acquire) == 0;
 }
 
-UObject* EnhancedInputBackend::resolve_component(const std::wstring& path) const
+UObject* EnhancedInputBackend::resolve_component(const std::wstring& path, std::string& error) const
 {
     const auto find_exact = [&](const wchar_t* class_name) -> UObject* {
         std::vector<UObject*> objects;
         RC::Unreal::UObjectGlobals::FindAllOf(class_name, objects);
         for (auto* object : objects)
         {
-            if (object && object->GetPathName() == path && validate_component(object))
+            if (object && object->GetPathName() == path)
             {
+                if (!validate_component(object))
+                {
+                    auto* type = object_class(object);
+                    error = "EnhancedInputComponent found, but native layout validation failed: properties_size=" +
+                        std::to_string(type ? type->GetPropertiesSize() : -1) +
+                        ", expected=" + std::to_string(ABI::enhanced_input_component_size);
+                    return nullptr;
+                }
                 return object;
             }
         }
@@ -413,16 +466,18 @@ std::pair<uint64_t, std::string> EnhancedInputBackend::open_target(LuaSession& s
         collect_inactive_locked();
     }
 
-    auto* component = resolve_component(widen_ascii(component_path));
+    std::string resolution_error;
+    auto* component = resolve_component(widen_ascii(component_path), resolution_error);
     if (!component)
     {
-        return {0, "EnhancedInputComponent was not found at object path: " + component_path};
+        return {0, resolution_error.empty() ? "EnhancedInputComponent was not found at object path: " + component_path : resolution_error};
     }
 
     Target target{};
     target.id = next_target_.fetch_add(1);
     target.session = &session;
     target.component.assign(component);
+    if (target.component.Get() != component) return {0, "Enhanced Input component weak-reference initialization failed"};
     target.component_path_utf8 = std::move(component_path);
 
     const auto id = target.id;
@@ -437,6 +492,73 @@ std::pair<uint64_t, std::string> EnhancedInputBackend::open_target(LuaSession& s
         return {0, "Enhanced Input target handle collision"};
     }
     return {id, {}};
+}
+
+
+std::pair<std::string, std::string> EnhancedInputBackend::inspect_target(LuaSession& session, uint64_t target)
+{
+    if (!RC::Unreal::IsInGameThread()) return {{}, "InspectInputComponent must run on the Unreal game thread"};
+    std::scoped_lock lock(mutex_);
+    if (!available()) return {{}, "Enhanced Input backend is not initialized"};
+    const auto found = targets_.find(target);
+    if (found == targets_.end() || found->second.session != &session || inactive_sessions_.contains(&session))
+        return {{}, "Enhanced Input target is unknown, stopped, or belongs to another Lua session"};
+    const auto read = [](const void* source, void* destination, std::size_t size) {
+        std::size_t copied{};
+        return source && ReadProcessMemory(GetCurrentProcess(), source, destination, size, &copied) && copied == size;
+    };
+    const auto resolve = [&](const FWeakObjectPtr& weak) -> UObject* {
+        if (weak.object_serial_number == 0 || weak.object_index < 0) return nullptr;
+        const auto* item = RC::Unreal::FUObjectArray::IndexToObject(weak.object_index);
+        if (!item) return nullptr;
+        UObject* object{};
+        int32_t serial{};
+        const auto address = reinterpret_cast<std::uintptr_t>(item);
+        if (!read(reinterpret_cast<const void*>(address), &object, sizeof(object)) ||
+            !read(reinterpret_cast<const void*>(address + FWeakObjectPtr::object_item_serial_offset), &serial, sizeof(serial))) return nullptr;
+        return serial == weak.object_serial_number ? object : nullptr;
+    };
+    auto* component = resolve(found->second.component);
+    ABI::ActionEventBindingArray array{};
+    const bool array_readable = component && read(reinterpret_cast<const void*>(reinterpret_cast<std::uintptr_t>(component) + ABI::action_event_bindings_offset), &array, sizeof(array));
+    const bool invariant = array_readable && snapshot_array_valid(reinterpret_cast<std::uintptr_t>(array.data), array.size, array.capacity);
+    std::vector<std::uintptr_t> entries;
+    if (invariant) entries.resize(static_cast<std::size_t>(array.size));
+    const bool entries_readable = invariant && (entries.empty() || read(array.data, entries.data(), entries.size() * sizeof(std::uintptr_t)));
+    std::ostringstream out;
+    out << "binding_snapshot schema=1 target=" << target << " game_thread=1 component_valid=" << (component != nullptr)
+        << " component_index=" << found->second.component.object_index << " component_serial=" << found->second.component.object_serial_number
+        << " array_readable=" << array_readable << " array_invariants=" << invariant << " array_size=" << array.size
+        << " array_capacity=" << array.capacity << " entries_readable=" << entries_readable << '\n';
+    std::size_t count{};
+    bool truncated{};
+    for (const auto& live : bindings_)
+    {
+        const auto it = subscriptions_.find(live.subscription);
+        if (it == subscriptions_.end() || it->second->target != target || it->second->session != &session) continue;
+        if (count == 256) { truncated = true; break; }
+        ++count;
+        const auto& sub = *it->second;
+        const bool member = entries_readable && snapshot_contains(entries, reinterpret_cast<std::uintptr_t>(live.binding));
+        FWeakObjectPtr action;
+        ABI::TriggerEvent event{};
+        uint32_t handle{};
+        const bool metadata = snapshot_read_metadata(member, read, live.action_address, live.event_address, live.handle_address, action, event, handle);
+        const bool action_matches = metadata && action.object_index == live.expected_action.object_index && action.object_serial_number == live.expected_action.object_serial_number;
+        out << "binding subscription=" << sub.id << " scope=" << sub.debug.scope_id << " binding=" << sub.debug.binding_id
+            << " active=" << sub.active.load(std::memory_order_acquire) << " member=" << member << " metadata_readable=" << metadata
+            << " expected_action_index=" << live.expected_action.object_index << " expected_action_serial=" << live.expected_action.object_serial_number
+            << " expected_action_valid=" << (resolve(live.expected_action) != nullptr)
+            << " expected_trigger=" << static_cast<unsigned>(sub.phase) << " expected_handle=" << live.expected_handle;
+        if (metadata) out << " action_index=" << action.object_index << " action_serial=" << action.object_serial_number
+            << " action_valid=" << (action_matches ? (resolve(live.expected_action) != nullptr ? "1" : "0") : "unknown")
+            << " action_matches=" << action_matches
+            << " trigger=" << static_cast<unsigned>(event) << " trigger_matches=" << (event == sub.phase)
+            << " handle=" << handle << " handle_matches=" << (handle == live.expected_handle);
+        out << '\n';
+    }
+    out << "snapshot_end reported=" << count << " truncated=" << truncated << '\n';
+    return {out.str(), {}};
 }
 
 bool EnhancedInputBackend::close_target(LuaSession& session, uint64_t target)
@@ -504,6 +626,9 @@ std::pair<uint64_t, std::string> EnhancedInputBackend::subscribe(
         return {0, "InputAction was not found at object path: " + action_path};
     }
 
+    const FWeakObjectPtr action_reference(action);
+    if (action_reference.Get() != action) return {0, "InputAction weak-reference initialization failed: " + action_path};
+
     auto subscription = std::make_shared<EnhancedInputSubscription>();
     subscription->id = next_subscription_.fetch_add(1);
     subscription->target = target_id;
@@ -517,7 +642,13 @@ std::pair<uint64_t, std::string> EnhancedInputBackend::subscribe(
     // Complete all potentially allocating bookkeeping before publishing the
     // polymorphic binding into Unreal's array. After reserve succeeds, the
     // final LiveBinding insertion cannot strand an untracked native object.
-    bindings_.reserve(bindings_.size() + 1);
+    if (bindings_.size() == bindings_.capacity())
+    {
+        const auto capacity = bindings_.capacity();
+        const auto growth = std::min(std::max<std::size_t>(capacity / 2, 4), bindings_.max_size() - capacity);
+        if (growth == 0) return {0, "Enhanced Input binding storage is full"};
+        bindings_.reserve(capacity + growth);
+    }
     const auto id = subscription->id;
     const auto [subscription_it, inserted] = subscriptions_.emplace(id, subscription);
     if (!inserted)
@@ -536,6 +667,11 @@ std::pair<uint64_t, std::string> EnhancedInputBackend::subscribe(
     live.component.assign(component);
     live.binding = binding;
     live.subscription = id;
+    live.expected_action = binding->action;
+    live.action_address = &binding->action;
+    live.event_address = &binding->event;
+    live.handle_address = binding->handle_address();
+    live.expected_handle = *binding->handle_address();
     bindings_.push_back(std::move(live));
     if (subscription->debug.primary)
     {
@@ -691,10 +827,12 @@ void EnhancedInputBackend::collect_inactive_locked()
 
 std::vector<EnhancedInputEvent> EnhancedInputBackend::take_events()
 {
+    if (!dispatch_state_->events_ready.pending()) return {};
     std::vector<EnhancedInputEvent> result;
     {
         std::scoped_lock lock(dispatch_state_->mutex);
-        result.swap(dispatch_state_->events);
+        result = drain_queue(dispatch_state_->events, dispatch_state_->spare_events);
+        dispatch_state_->events_ready.drained();
     }
     for (const auto& event : result)
     {
@@ -714,10 +852,27 @@ std::vector<EnhancedInputEvent> EnhancedInputBackend::take_events()
 
 std::vector<EnhancedInputTrace> EnhancedInputBackend::take_traces()
 {
+    if (!dispatch_state_->traces_ready.pending()) return {};
     std::scoped_lock lock(dispatch_state_->mutex);
-    std::vector<EnhancedInputTrace> result;
-    result.swap(dispatch_state_->traces);
+    auto result = drain_queue(dispatch_state_->traces, dispatch_state_->spare_traces);
+    dispatch_state_->traces_ready.drained();
     return result;
+}
+
+void EnhancedInputBackend::recycle_events(std::vector<EnhancedInputEvent> batch)
+{
+    if (batch.capacity() == 0) return;
+    batch.clear(); // Release subscription ownership outside the queue mutex.
+    std::scoped_lock lock(dispatch_state_->mutex);
+    retain_empty_buffer(dispatch_state_->spare_events, batch);
+}
+
+void EnhancedInputBackend::recycle_traces(std::vector<EnhancedInputTrace> batch)
+{
+    if (batch.capacity() == 0) return;
+    batch.clear();
+    std::scoped_lock lock(dispatch_state_->mutex);
+    retain_empty_buffer(dispatch_state_->spare_traces, batch);
 }
 
 void EnhancedInputBackend::trace(
@@ -774,6 +929,11 @@ EnhancedInputBackend::NativeBinding* EnhancedInputBackend::attach(
         subscription->phase,
         next_binding_handle_.fetch_add(1),
         subscription);
+    if (binding->action.Get() != action)
+    {
+        delete binding;
+        return nullptr;
+    }
     array->data[array->size++] = binding;
     return binding;
 }

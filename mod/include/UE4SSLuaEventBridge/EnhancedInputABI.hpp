@@ -118,9 +118,16 @@ struct ActionEventBindingArray
     int32_t capacity{};
 };
 
+// Explicit experimental target profile; never infer offsets from arbitrary sizes.
+#ifdef UE4SSLEB_COMPONENT_LAYOUT_128
+inline constexpr std::size_t input_component_size = 0x128;
+inline constexpr std::size_t enhanced_input_component_size = 0x160;
+inline constexpr std::size_t action_event_bindings_offset = 0x128;
+#else
 inline constexpr std::size_t input_component_size = 0x140;
 inline constexpr std::size_t enhanced_input_component_size = 0x178;
 inline constexpr std::size_t action_event_bindings_offset = 0x140;
+#endif
 inline constexpr std::size_t uobject_class_offset = 0x10;
 inline constexpr std::size_t instance_source_action_offset = 0x00;
 inline constexpr std::size_t instance_trigger_event_offset = 0x13;

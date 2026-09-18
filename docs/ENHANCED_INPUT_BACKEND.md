@@ -3,8 +3,9 @@
 ## Purpose
 
 Translate native Enhanced Input action events into Lua callbacks without
-installing `ProcessEvent` hooks, UObject listeners, scans, or polling. Enhanced
+installing `ProcessEvent` hooks, UObject listeners, scans, or key-state polling. Enhanced
 Input remains responsible for trigger evaluation and value generation.
+Copied events are delivered through scheduled queue checks; see QUEUE_DISPATCH_RATE.md.
 
 The backend is game-agnostic. A caller supplies both the exact live
 `UEnhancedInputComponent` object path and the exact `UInputAction` object path.

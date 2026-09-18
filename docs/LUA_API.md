@@ -16,7 +16,8 @@ local version = bridge.GetVersion()
 local capabilities = bridge.GetCapabilities()
 ```
 
-Version 0.3.3 reports API version 4:
+The current build reports API version 4; `GetVersion()` returns the separate
+product version defined in `mod/include/UE4SSLuaEventBridge/Version.hpp`:
 
 ```lua
 {
@@ -29,12 +30,24 @@ Version 0.3.3 reports API version 4:
     trigger_hold = true,
     detailed_errors = true,
     debug_tracing = true,
+    binding_snapshot = true,
     target_ue4ss_commit = "97b7e501",
 }
 ```
 
 Capabilities are authoritative. Consumers should not infer support from the
 bridge version.
+
+For on-demand game-thread inspection, use `input:InspectBindings()` or
+`bridge.InspectInputComponent(targetHandle)`. Both return snapshot text or
+`nil, error`; see [binding snapshot API](BINDING_SNAPSHOT.md) for its schema and
+limits. This capability does not enable continuous tracing or polling.
+
+`bridge.GetDispatchStats()` returns process-wide producer queue diagnostics:
+`queued`, `queue_high_water`, `rejected_events`, and `rejected_traces`. The queued
+count excludes the consumer's partially processed batch. See
+[dispatch limits](QUEUE_DISPATCH_RATE.md) for defaults, overload behavior and
+configuration; zero rejected events does not itself prove end-to-end delivery.
 
 ## Open generated input
 
