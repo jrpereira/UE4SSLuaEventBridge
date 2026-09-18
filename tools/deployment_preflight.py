@@ -86,7 +86,7 @@ def main():
     session = read(args.session)
     if args.session is None and os.name == 'nt':
         command = "@(Get-Process -Name Dawnwalker -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{pid=$_.Id;started_at=$_.StartTime.ToUniversalTime().ToString('o')} }) | ConvertTo-Json -Compress"
-        raw = subprocess.check_output(['powershell','-NoProfile','-Command',command], text=True).strip()
+        raw = subprocess.check_output(['powershell','-NoProfile','-NonInteractive','-Command',command], text=True, timeout=20).strip()
         if raw:
             sessions = json.loads(raw)
             if isinstance(sessions, list):

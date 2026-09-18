@@ -67,3 +67,45 @@ identity as the detected session. `--session` is for an explicitly established f
 session identity or isolated tests. Neither option makes stale evidence authoritative.
 Exit 2 means attention is required. The tool presents choices but performs no
 deployment, restart or input. An ignore choice is for this launch, not a saved bypass.
+
+The executable local workflow is `tools/release_session.py`. Use `check`, `deploy`
+or `launch` with `--manifest`, `--staged`, `--deployed`, `--working` and `--records`.
+Put records outside public source and payload folders. Lua candidates use the
+manifest embedded in their tested package. The working release definition and
+complete payload must match. Deployment refuses stale source or tampered stage,
+backs up existing files, preserves personal settings and existing enablement,
+and stops if the game is running. Close the game first and repeat deployment;
+the tool never terminates an active game automatically.
+
+For a local native candidate, run `python tools/native_candidate.py --working .
+--output build/NEW-CANDIDATE` in an x64 MSVC developer shell. This creates a fresh
+Release build, runs CTest and writes `candidate-manifest.json` beside its `dist/`
+folder. Existing output directories are refused. Its input hashes include source,
+headers, ABI definitions, CMake files and tests, including untracked additions.
+Failed tests or changed inputs during compilation produce no candidate manifest.
+This record establishes a tested local build, not in-game acceptance or a signed
+supply-chain attestation. A release ZIP sidecar alone cannot certify a dirty local
+build; use this local builder when comparing working source to a DLL.
+
+Use `--log /path/to/UE4SS.log` for Lua loaded-version messages. The adapter requires
+the log boot timestamp to follow the current process start within two minutes.
+It explicitly labels this timestamp correlation and never treats it as proof of
+loaded bytes. Missing or oversized logs leave runtime identity unverified.
+`--bridge-dir /path/to/ue4ss/bridge` optionally makes one bounded protocol-3 query
+to the diagnostic UEBridge for the native product version. Coordinate access to
+that shared client channel. A cached response or changed process is rejected;
+another queued request is never overwritten. No helper is needed in production.
+
+Launch passes the executable and arguments after `--`. A discrepancy blocks
+launch until corrected or explicitly overridden by `--ignore-once`; the override
+is recorded for that invocation and never stored as a future preference. Example:
+
+```sh
+python tools/release_session.py launch --manifest stage/MODULE/manifest.json --staged stage/MODULE --deployed /path/to/Mods/MODULE --working . --records /private/session-records --ignore-once -- /path/to/Dawnwalker.exe
+```
+
+This command starts the game: obtain any required computer-control permission
+before running it. Running processes are inspected rather than launched again.
+Version-only evidence cannot establish exact loaded contents, so the warning
+remains even when the version label matches. Native acceptance/performance tests
+must still be recorded separately.
