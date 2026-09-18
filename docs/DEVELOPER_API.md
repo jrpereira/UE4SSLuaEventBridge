@@ -273,7 +273,7 @@ local input, err = Helpers.OpenInput({
     subsystem_path = ENHANCED_INPUT_SUBSYSTEM_PATH,
     mapping_priority = 10000,
     debug = true,
-    debug_label = "ExtendedControls",
+    debug_label = "QuickslotsForever",
 })
 ```
 
@@ -286,7 +286,7 @@ produce a trace line every input-processing frame.
 Each trace is written through UE4SS's normal log output in this form:
 
 ```text
-[UE4SSLuaEventBridge][trace] label="ExtendedControls" stage="event_queued" scope=1 binding=2 key="F10" trigger="Hold" phase="Triggered" event_seq=17 thread_id=1248 game_thread=true reason="-"
+[UE4SSLuaEventBridge][trace] label="QuickslotsForever" stage="event_queued" scope=1 binding=2 key="F10" trigger="Hold" phase="Triggered" event_seq=17 thread_id=1248 game_thread=true reason="-"
 ```
 
 Scope and binding IDs are monotonic and stable within one Lua session. Event
