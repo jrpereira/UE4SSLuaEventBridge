@@ -3,6 +3,8 @@
 #ifdef _WIN32
 
 #include <UE4SSLuaEventBridge/EnhancedInputABI.hpp>
+#include <UE4SSLuaEventBridge/QueueBuffers.hpp>
+#include <UE4SSLuaEventBridge/QueueCapacity.hpp>
 
 #include <atomic>
 #include <cstdint>
@@ -55,9 +57,15 @@ struct EnhancedInputDispatchState
     std::atomic_bool clone_created{false};
     std::atomic_uint64_t live_bindings{0};
     std::atomic_uint64_t next_event_sequence{1};
+    QueueReadiness events_ready;
+    QueueReadiness traces_ready;
     std::mutex mutex;
     std::vector<EnhancedInputEvent> events;
     std::vector<EnhancedInputTrace> traces;
+    std::vector<EnhancedInputEvent> spare_events;
+    std::vector<EnhancedInputTrace> spare_traces;
+    QueueCapacity event_capacity;
+    QueueCapacity trace_capacity{1024};
 };
 
 void write_debug_trace(
@@ -92,6 +100,9 @@ public:
     EnhancedInputBackend& operator=(const EnhancedInputBackend&) = delete;
 
     void initialize();
+    void set_queue_limit(std::size_t limit);
+    struct QueueStats { std::size_t queued, high_water; uint64_t rejected, traces_rejected; };
+    QueueStats queue_stats() const;
     // Returns false when Unreal still owns one or more native binding objects.
     // In that case the containing DLL must remain loaded until process exit.
     [[nodiscard]] bool shutdown();
@@ -101,6 +112,7 @@ public:
     // an EnhancedInputComponent is meaningful and supplies its exact object path.
     std::pair<uint64_t, std::string> open_target(LuaSession& session, std::string component_path);
     bool close_target(LuaSession& session, uint64_t target);
+    std::pair<std::string, std::string> inspect_target(LuaSession& session, uint64_t target);
 
     std::pair<uint64_t, std::string> subscribe(
         LuaSession& session,
@@ -117,6 +129,8 @@ public:
 
     std::vector<EnhancedInputEvent> take_events();
     std::vector<EnhancedInputTrace> take_traces();
+    void recycle_events(std::vector<EnhancedInputEvent> batch);
+    void recycle_traces(std::vector<EnhancedInputTrace> batch);
     void trace(
         LuaSession& session,
         const EnhancedInputDebugInfo& debug,
@@ -139,9 +153,14 @@ private:
         RC::Unreal::FWeakObjectPtr component;
         NativeBinding* binding{};
         uint64_t subscription{};
+        RC::Unreal::FWeakObjectPtr expected_action;
+        const void* action_address{};
+        const void* event_address{};
+        const void* handle_address{};
+        uint32_t expected_handle{};
     };
 
-    RC::Unreal::UObject* resolve_component(const std::wstring& path) const;
+    RC::Unreal::UObject* resolve_component(const std::wstring& path, std::string& error) const;
     RC::Unreal::UObject* resolve_action(const std::wstring& path) const;
     bool validate_component(RC::Unreal::UObject* component) const;
     NativeBinding* attach(

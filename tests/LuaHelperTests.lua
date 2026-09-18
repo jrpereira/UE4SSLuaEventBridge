@@ -16,6 +16,8 @@ local nativeBindings = {}
 local scopeTraces = {}
 local failNextBind = false
 local gameThread = true
+local failContextAdd = false
+local failContextRemove = false
 
 local function object(kind, path)
     local value = { kind = kind, path = path, valid = true }
@@ -35,8 +37,10 @@ function subsystem:AddMappingContext(context, priority, _options)
     context.priority = priority
     self.active[context] = true
     counters.contexts_added = counters.contexts_added + 1
+    if failContextAdd then error('injected failure after context installation') end
 end
 function subsystem:RemoveMappingContext(context, _options)
+    if failContextRemove then error('injected context removal failure') end
     if self.active[context] then
         self.active[context] = nil
         counters.contexts_removed = counters.contexts_removed + 1
@@ -54,7 +58,18 @@ for _, name in ipairs({
     classes["/Script/EnhancedInput." .. name].class_name = name
 end
 
+local failWeakInitialization = false
+local weakInitializations = 0
+local systemLibrary = object("KismetSystemLibrary", "/Script/Engine.Default__KismetSystemLibrary")
+function systemLibrary:Conv_ObjectToSoftObjectReference(action)
+    expect(gameThread and action.kind == "InputAction")
+    if failWeakInitialization then error("injected reflected conversion failure") end
+    weakInitializations = weakInitializations + 1
+    action.weak_initialized = true
+    -- Deliberately no result: the helper must not inspect or depend on it.
+end
 function StaticFindObject(path)
+    if path == "/Script/Engine.Default__KismetSystemLibrary" then return systemLibrary end
     if path == subsystemPath then return subsystem end
     return classes[path] or object("Missing", path)
 end
@@ -79,9 +94,15 @@ __UE4SSLuaEventBridge_SessionId = 17
 
 function UE4SSLuaEventBridge_GetVersion() return "0.3.3" end
 function UE4SSLuaEventBridge_GetCapabilities()
-    return 4, true, true, true, true, true, true, true, true, "97b7e501"
+    return 4, true, true, true, true, true, true, true, true, "97b7e501", true
+end
+function UE4SSLuaEventBridge_InspectInputComponent(session, target)
+    expect(session == 17)
+    if not gameThread then return nil, "InspectInputComponent must run on the Unreal game thread" end
+    return "snapshot target=" .. target
 end
 function UE4SSLuaEventBridge_IsInGameThread() return gameThread end
+function UE4SSLuaEventBridge_GetDispatchStats() return 7,42,3,5 end
 function UE4SSLuaEventBridge_OpenInputComponent(_session, ...)
     counters.targets_opened = counters.targets_opened + 1
     return counters.targets_opened
@@ -293,4 +314,64 @@ expect(debugScope:Close() == true)
 expect(#scopeTraces == 2 and scopeTraces[2].stage == 2,
     "debug Close must emit scope_closed")
 
+expect(bridge.GetCapabilities().binding_snapshot == true)
+local initFailureScope = assert(Helpers.OpenInput({component_path="TestComponent",subsystem_path=subsystemPath}))
+local beforeInitHandles, beforeInitContexts = nextHandle, counters.contexts_added
+failWeakInitialization = true
+local failedInit, failedInitError = initFailureScope:Bind("Q",Trigger.Tap,function() end)
+expect(failedInit == nil and failedInitError:find("weak reference",1,true))
+expect(nextHandle == beforeInitHandles and counters.contexts_added == beforeInitContexts)
+failWeakInitialization = false
+assert(initFailureScope:Close())
+expect(weakInitializations > 0)
+local diagnosticScope = assert(UE4SSLuaEventBridge.Helpers.OpenInput({component_path="TestComponent", subsystem_path=subsystemPath}))
+expect(type(diagnosticScope:InspectBindings()) == "string")
+local beforeSnapshot = counters.contexts_added
+ gameThread = false
+local snapshot, snapshotError = diagnosticScope:InspectBindings()
+expect(snapshot == nil and snapshotError:find("game thread",1,true))
+gameThread = true
+expect(counters.contexts_added == beforeSnapshot)
+expect(UE4SSLuaEventBridge.InspectInputComponent(-1) == nil)
+assert(diagnosticScope:Close())
+expect(diagnosticScope:InspectBindings() == nil)
+local function countEntries(values)
+    local n=0
+    for _ in pairs(values) do n=n+1 end
+    return n
+end
+local beforeContexts=countEntries(subsystem.active)
+local stats=bridge.GetDispatchStats()
+expect(stats.queued==7 and stats.queue_high_water==42 and stats.rejected_events==3 and stats.rejected_traces==5)
+local beforeBindings=countEntries(nativeTokens)
+for _=1,500 do
+    local scope=assert(Helpers.OpenInput({component_path='TestComponent',subsystem_path=subsystemPath}))
+    local calls=0
+    local handle=assert(scope:Bind('A',Trigger.Tap,function() calls=calls+1 end))
+    local token=nativeTokens[handle]
+    dispatch(token,handle,'action','Triggered',0,0,1,0,0,0,1)
+    expect(calls==1)
+    assert(scope:Unbind(handle))
+    dispatch(token,handle,'action','Triggered',0,0,1,0,0,0,2)
+    expect(calls==1,'callback fired after unbind')
+    assert(scope:Close())
+    assert(scope:Close())
+end
+expect(countEntries(subsystem.active)==beforeContexts,'contexts accumulated during rebind cycles')
+expect(countEntries(nativeTokens)==beforeBindings,'native handles accumulated during rebind cycles')
+local rollback=assert(Helpers.OpenInput({component_path='TestComponent',subsystem_path=subsystemPath}))
+failContextAdd=true
+local bad,why=rollback:Bind('B',Trigger.Tap,function() end)
+expect(bad==nil and why:find('failed to add',1,true))
+failContextAdd=false
+expect(countEntries(subsystem.active)==beforeContexts,'failed installation leaked a context')
+expect(countEntries(nativeTokens)==beforeBindings,'failed installation leaked native handles')
+local handle=assert(rollback:Bind('C',Trigger.Hold,function() end))
+failContextRemove=true
+local closed,closeError=rollback:Close()
+expect(not closed and closeError:find('failed to remove',1,true))
+failContextRemove=false
+assert(rollback:Close())
+expect(countEntries(subsystem.active)==beforeContexts,'retry did not remove retained context')
+expect(countEntries(nativeTokens)==beforeBindings,'cleanup retry leaked native handles')
 print("Lua helper tests passed")

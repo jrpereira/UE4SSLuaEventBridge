@@ -142,9 +142,15 @@ end
 local bridge = {
     API_VERSION = 4,
     GetVersion = UE4SSLuaEventBridge_GetVersion,
+    GetDispatchStats = function()
+        local queued, highWater, rejected, tracesRejected = UE4SSLuaEventBridge_GetDispatchStats()
+        if queued == nil then return nil, "bridge unavailable" end
+        return {queued=queued, queue_high_water=highWater, rejected_events=rejected,
+            rejected_traces=tracesRejected}
+    end,
     GetCapabilities = function()
         local api, enhancedInput, explicitTarget, helpers, dynamicInput,
-            triggerTap, triggerHold, detailedErrors, debugTracing, target =
+            triggerTap, triggerHold, detailedErrors, debugTracing, target, bindingSnapshot =
             UE4SSLuaEventBridge_GetCapabilities()
         return {
             api = api,
@@ -157,6 +163,7 @@ local bridge = {
             detailed_errors = detailedErrors,
             debug_tracing = debugTracing,
             target_ue4ss_commit = target,
+            binding_snapshot = bindingSnapshot == true,
         }
     end,
     OpenInputComponent = function(componentPath)
@@ -167,6 +174,12 @@ local bridge = {
         local args = { __session }
         for i = 1, #packed do args[#args + 1] = packed[i] end
         return UE4SSLuaEventBridge_OpenInputComponent(table.unpack(args, 1, #args))
+    end,
+    InspectInputComponent = function(targetHandle)
+        if not __positiveInteger(targetHandle) then
+            return nil, "targetHandle must be a positive integer returned by OpenInputComponent"
+        end
+        return UE4SSLuaEventBridge_InspectInputComponent(__session, targetHandle)
     end,
     CloseInputComponent = function(targetHandle)
         if not __positiveInteger(targetHandle) then
@@ -454,6 +467,19 @@ function __scopeMethods:Bind(key, trigger, callback, options)
         return nil, message .. (removeError and "; " .. removeError or "")
     end
 
+    -- Ask Unreal to initialize its own weak identity. Do not use the pinned
+    -- native AllocateSerialNumber wrapper: its C++ soft-reference copy faults.
+    -- The reflected function takes one UObject and returns a soft object ref;
+    -- we deliberately discard the result and verify identity in native Bind.
+    local initialized, initializeError = pcall(function()
+        local system = StaticFindObject("/Script/Engine.Default__KismetSystemLibrary")
+        if system == nil or not system:IsValid() then error("KismetSystemLibrary default object is unavailable") end
+        system:Conv_ObjectToSoftObjectReference(action)
+    end)
+    if not initialized then
+        return nil, "failed to initialize generated InputAction weak reference: " .. tostring(initializeError)
+    end
+
     local actionPath, pathError = __objectPath(action)
     if actionPath == nil then
         local removed, removeError = __removeContext(state, record)
@@ -541,6 +567,13 @@ function __scopeMethods:Unbind(handle)
     if not removed then return false, removeError end
     state.bindings[handle] = nil
     return true
+end
+
+function __scopeMethods:InspectBindings()
+    local state = __scopeStates[self]
+    assert(state ~= nil, "invalid input scope")
+    if state.closed then return nil, "input scope is closed" end
+    return bridge.InspectInputComponent(state.target)
 end
 
 function __scopeMethods:Close()
