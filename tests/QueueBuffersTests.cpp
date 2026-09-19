@@ -1,10 +1,82 @@
 #include <UE4SSLuaEventBridge/QueueBuffers.hpp>
+#include <UE4SSLuaEventBridge/DispatchBacklog.hpp>
+#include <UE4SSLuaEventBridge/DispatchBudget.hpp>
+#include <barrier>
 #include <cassert>
 #include <memory>
 #include <thread>
 #include <mutex>
 using namespace UE4SSLuaEventBridge;
+// Real producer, consumer and observer threads, synchronized without sleeps.
+// Exercise production buffer transfer, backlog, budgets and count publication.
+void pending_count_lifecycle() {
+ ConsumerBacklogCount pending;
+ std::mutex lock;
+ std::vector<std::shared_ptr<int>> queue, spare;
+ DispatchBacklog<std::shared_ptr<int>> backlog;
+ std::weak_ptr<int> old;
+ std::barrier phase(3);
+ constexpr int cycles = 100;
+ std::thread producer([&] {
+   for (int i=0; i<cycles; ++i) {
+     { std::scoped_lock held(lock); auto owner=std::make_shared<int>(i);
+       old=owner; queue={owner,owner,owner}; }
+     phase.arrive_and_wait(); // Producer-only snapshot.
+     phase.arrive_and_wait();
+     phase.arrive_and_wait(); // Batch transfer complete.
+     { std::scoped_lock held(lock); queue.push_back(std::make_shared<int>(-1)); }
+     phase.arrive_and_wait(); // Producer refill complete.
+     phase.arrive_and_wait(); // Budgeted partial dispatch complete.
+     phase.arrive_and_wait();
+     phase.arrive_and_wait(); // Consumer discarded old batch.
+     phase.arrive_and_wait();
+     { std::scoped_lock held(lock); queue.clear(); } // Shutdown clears producer.
+     phase.arrive_and_wait();
+     phase.arrive_and_wait();
+   }
+ });
+ std::thread consumer([&] {
+   for (int i=0; i<cycles; ++i) {
+     phase.arrive_and_wait(); phase.arrive_and_wait();
+     { std::scoped_lock held(lock); backlog.load(drain_queue(queue,spare));
+       pending.remaining(backlog.size()); }
+     phase.arrive_and_wait(); phase.arrive_and_wait();
+     const auto now=DispatchBudget::Clock::now();
+     DispatchBudget budget(now,1,std::chrono::microseconds(0));
+     assert(dispatch_budgeted(backlog,budget,[&](auto event) {
+       pending.remaining(backlog.size());
+       std::scoped_lock held(lock);
+       assert(*event==i && pending.total(queue.size())==3);
+       return true;
+     },[&] { return now; })==1);
+     phase.arrive_and_wait(); phase.arrive_and_wait();
+     // Discard canceled entries: no callback count, but queued must reach zero.
+     assert(dispatch_budgeted(backlog,budget,[&](auto event) {
+       pending.remaining(backlog.size()); assert(*event==i); return false;
+     },[&] { return now; })==0);
+     assert(old.expired()); // Moved-out backlog entries retain no ownership.
+     auto buffer=backlog.release_buffer(); buffer.clear();
+     { std::scoped_lock held(lock); retain_empty_buffer(spare,buffer); }
+     phase.arrive_and_wait(); phase.arrive_and_wait();
+     phase.arrive_and_wait(); phase.arrive_and_wait();
+   }
+ });
+ for (int i=0; i<cycles; ++i) {
+   phase.arrive_and_wait();
+   { std::scoped_lock held(lock); assert(pending.total(queue.size())==3); }
+   phase.arrive_and_wait(); phase.arrive_and_wait(); phase.arrive_and_wait();
+   phase.arrive_and_wait();
+   { std::scoped_lock held(lock); assert(pending.total(queue.size())==3 && !old.expired()); }
+   phase.arrive_and_wait(); phase.arrive_and_wait();
+   { std::scoped_lock held(lock); assert(pending.total(queue.size())==1 && old.expired()); }
+   phase.arrive_and_wait(); phase.arrive_and_wait();
+   { std::scoped_lock held(lock); assert(pending.total(queue.size())==0); }
+   phase.arrive_and_wait();
+ }
+ producer.join(); consumer.join();
+}
 int main() {
+ pending_count_lifecycle();
  QueueReadiness ready;
  assert(!ready.pending());
  std::mutex mutex;

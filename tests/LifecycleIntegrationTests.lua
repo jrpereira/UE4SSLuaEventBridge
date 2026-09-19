@@ -83,7 +83,7 @@ local function fixture()
         end
         env.UE4SSLuaEventBridge_CloseInputComponent = function(id, target)
             own(id)
-            check(self.targets[target] == id, "target closed twice or by wrong session")
+            if self.targets[target] ~= id then return false, "unknown target" end
             self.targets[target] = nil
             return true
         end
@@ -97,6 +97,7 @@ local function fixture()
         end
         env.UE4SSLuaEventBridge_Unbind = function(id, handle)
             own(id)
+            if handle == self.unbindThrowHandle then error("injected scope exception") end
             if self.unbindFailures > 0 then
                 self.unbindFailures = self.unbindFailures - 1
                 return false, "injected native removal failure"
@@ -107,9 +108,29 @@ local function fixture()
             self.bindings[handle] = nil
             return true
         end
+        local function bulkUnbind(id, preserveTargets)
+            own(id)
+            if self.bulkFailure then return 0, false, "injected bulk failure" end
+            local removed = 0
+            for handle, binding in pairs(self.bindings) do
+                if binding.session == session then
+                    self.bindings[handle] = nil
+                    removed = removed + 1
+                end
+            end
+            if not preserveTargets then
+                for target, owner in pairs(self.targets) do
+                    if owner == id then self.targets[target] = nil end
+                end
+            end
+            return removed, true
+        end
+        env.UE4SSLuaEventBridge_UnbindAll = function(id) return bulkUnbind(id, false) end
+        env.UE4SSLuaEventBridge_UnbindAllPreserveTargets = function(id) return bulkUnbind(id, true) end
         session.dispatch = check(loadfile("mod/lua/bridge_api.lua", "t", env))()
         session.api = env.UE4SSLuaEventBridge
         session.cleanup = env.__UE4SSLuaEventBridge_CloseHelperScopes
+        session.stop = env.__UE4SSLuaEventBridge_StopHelperScopes
         function session:open(debugEnabled)
             return check(self.api.Helpers.OpenInput({
                 component_path = "Component", subsystem_path = "Subsystem",
@@ -259,6 +280,91 @@ cases["one failed scope does not prevent cleanup of other scopes"] = function()
         "cleanup abandoned healthy scopes")
     check(s.cleanup())
     check(f.removals == 3)
+    f:empty()
+end
+
+cases["native stop helper propagates cleanup failure instead of losing return values"] = function()
+    local f = fixture()
+    local s = f:loadSession()
+    local scope = s:open()
+    check(scope:Bind("A", s.api.Helpers.Trigger.Tap, function() end))
+    f.removeFailures = 1
+    local ok, why = pcall(s.stop)
+    check(not ok and why:find("Lua-stop helper cleanup incomplete", 1, true))
+    check(why:find("injected removal failure", 1, true))
+    check(count(f.contexts) == 1, "failure falsely reported removal")
+    check(s.stop())
+    f:empty()
+end
+
+cases["thrown scope cleanup error does not abandon healthy scopes"] = function()
+    local f = fixture()
+    local s = f:loadSession()
+    local broken = s:open()
+    f.unbindThrowHandle = check(broken:Bind("A", s.api.Helpers.Trigger.Tap, function() end))
+    local healthy = s:open()
+    check(healthy:Bind("B", s.api.Helpers.Trigger.Tap, function() end))
+    local ok, why = s.cleanup()
+    check(not ok and why:find("injected scope exception", 1, true))
+    check(count(f.contexts) == 1 and f.removals == 1, "healthy scope was abandoned")
+    f.unbindThrowHandle = nil
+    check(s.cleanup())
+    f:empty()
+end
+
+cases["public UnbindAll retains failed contexts and supports repeated retries"] = function()
+    local f, calls = fixture(), 0
+    local s = f:loadSession()
+    local scope = s:open(true)
+    local handle = check(scope:Bind("A", s.api.Helpers.Trigger.Tap, function() calls = calls + 1 end))
+    local late = f:queued(handle)
+    f.removeFailures = 2
+    for _ = 1, 2 do
+        local _, ok, why = s.api.UnbindAll()
+        check(not ok and why:find("injected removal failure", 1, true))
+        check(count(f.targets) == 1 and count(f.contexts) == 1 and count(f.bindings) == 0)
+        late()
+        check(calls == 0)
+    end
+    check(scope:Close())
+    local _, ok = s.api.UnbindAll()
+    check(ok)
+    f:empty()
+end
+
+cases["public UnbindAll reconciles partial subscription removal"] = function()
+    local f, calls = fixture(), 0
+    local s = f:loadSession()
+    local scope = s:open(true)
+    local handle = check(scope:Bind("A", s.api.Helpers.Trigger.Tap, function() calls = calls + 1 end))
+    local late = f:queued(handle)
+    f.unbindFailures = 1
+    local _, ok = s.api.UnbindAll()
+    check(not ok and count(f.targets) == 1 and count(f.bindings) == 0)
+    late()
+    check(calls == 0)
+    local _, retried = s.api.UnbindAll()
+    check(retried)
+    check(scope:Close())
+    f:empty()
+end
+
+cases["public UnbindAll bulk failure keeps ownership but suppresses callbacks"] = function()
+    local f, calls = fixture(), 0
+    local s = f:loadSession()
+    local scope = s:open()
+    local handle = check(scope:Bind("A", s.api.Helpers.Trigger.Tap, function() calls = calls + 1 end))
+    local late = f:queued(handle)
+    f.unbindFailures = 1
+    f.bulkFailure = true
+    local _, ok, why = s.api.UnbindAll()
+    check(not ok and why:find("injected bulk failure", 1, true))
+    check(count(f.bindings) == 1 and count(f.targets) == 1)
+    late()
+    check(calls == 0)
+    f.bulkFailure = false
+    local _, retried = s.api.UnbindAll()
+    check(retried)
     f:empty()
 end
 

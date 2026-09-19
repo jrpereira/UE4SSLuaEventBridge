@@ -94,7 +94,7 @@ __UE4SSLuaEventBridge_SessionId = 17
 
 function UE4SSLuaEventBridge_GetVersion() return "0.3.3" end
 function UE4SSLuaEventBridge_GetCapabilities()
-    return 4, true, true, true, true, true, true, true, true, "97b7e501", true
+    return 4, true, true, true, true, true, true, true, true, "97b7e501", true, true
 end
 function UE4SSLuaEventBridge_InspectInputComponent(session, target)
     expect(session == 17)
@@ -374,4 +374,65 @@ failContextRemove=false
 assert(rollback:Close())
 expect(countEntries(subsystem.active)==beforeContexts,'retry did not remove retained context')
 expect(countEntries(nativeTokens)==beforeBindings,'cleanup retry leaked native handles')
+-- Native fault state is simulated here; production latch/overflow is tested in C++.
+local faultState = {}
+function UE4SSLuaEventBridge_EnableTargetDeliveryFaults(_session, target)
+    if not gameThread then return false, "wrong thread" end
+    if faultState[target] ~= nil then return false, "already registered" end
+    faultState[target] = "healthy"
+    return true
+end
+function UE4SSLuaEventBridge_IsTargetDeliveryValid(_session, target)
+    if faultState[target] == "healthy" then return true end
+    return false, faultState[target] or "unknown target"
+end
+expect(bridge.GetCapabilities().target_delivery_faults)
+expect(not bridge.SetTargetDeliveryFaultHandler(0, function() end))
+expect(not bridge.SetTargetDeliveryFaultHandler(99, false))
+expect(not bridge.IsTargetDeliveryValid(-1))
+local guarded = assert(bridge.OpenInputComponent("Guarded"))
+local faults, calls, held = 0, 0, false
+local epoch = 1
+local effects = {}
+local function faultHandler(event)
+    expect(event.target == guarded and event.reason == "queue_capacity_exceeded")
+    faults = faults + 1; held = false; epoch = epoch + 1
+end
+gameThread = false
+expect(not bridge.SetTargetDeliveryFaultHandler(guarded, faultHandler))
+gameThread = true
+assert(bridge.SetTargetDeliveryFaultHandler(guarded, faultHandler))
+expect(not bridge.SetTargetDeliveryFaultHandler(guarded, function() error("replacement ran") end))
+local started = assert(bridge.BindAction(guarded, "Action", "Started", function()
+    calls = calls + 1; held = true
+    local capturedEpoch = epoch
+    effects[#effects+1] = function()
+        if epoch == capturedEpoch and bridge.IsTargetDeliveryValid(guarded) then calls = calls + 100 end
+    end
+end))
+local token = nativeTokens[started]
+dispatch(token, started, "Action", "Started", 0,0,1,0,0,0,1)
+expect(held and calls == 1)
+faultState[guarded] = "queue_capacity_exceeded"
+-- Already scheduled work fails closed even BEFORE invalidation callback delivery.
+effects[1](); expect(calls == 1)
+dispatch(-1, guarded, "queue_capacity_exceeded")
+expect(not held and faults == 1 and not bridge.IsTargetDeliveryValid(guarded))
+dispatch(token, started, "Action", "Started", 0,0,1,0,0,0,2)
+expect(not held and calls == 1, "stale Started relatched after fault")
+dispatch(-1, guarded, "queue_capacity_exceeded"); expect(faults == 1)
+assert(bridge.Unbind(started)); assert(bridge.CloseInputComponent(guarded))
+local throwing = assert(bridge.OpenInputComponent("Throwing"))
+assert(bridge.SetTargetDeliveryFaultHandler(throwing, function() error("injected fault handler failure") end))
+faultState[throwing] = "callback_error"
+expect(not pcall(dispatch,-1,throwing,"callback_error"))
+expect(pcall(dispatch,-1,throwing,"callback_error"))
+expect(not bridge.IsTargetDeliveryValid(throwing))
+assert(bridge.CloseInputComponent(throwing))
+local closedTarget = assert(bridge.OpenInputComponent("Closed"))
+assert(bridge.SetTargetDeliveryFaultHandler(closedTarget, function() error("closed target callback") end))
+assert(bridge.CloseInputComponent(closedTarget)); dispatch(-1,closedTarget,"callback_error")
+local stoppedTarget = assert(bridge.OpenInputComponent("Stopped"))
+assert(bridge.SetTargetDeliveryFaultHandler(stoppedTarget, function() error("stopped callback") end))
+bridge.UnbindAll(); dispatch(-1,stoppedTarget,"callback_error")
 print("Lua helper tests passed")

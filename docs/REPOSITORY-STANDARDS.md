@@ -52,9 +52,20 @@ files. Close the game before replacing files and preserve personal settings and
 enablement. The deployment tooling checks whether the game is running; it does
 not inspect loaded modules, read game logs or query a diagnostic bridge.
 
-Deployment never creates `enabled.txt`, including on a fresh installation. An
-existing marker is preserved. Enable the mod separately when desired; preflight
-does not treat user-controlled enablement as a payload mismatch.
+Deployment never creates `enabled.txt`. Existing installations preserve their
+current marker and `mods.txt` state, including an explicit disabled entry. A
+genuinely fresh installation with no existing bridge entry receives
+`UE4SSLuaEventBridge : 1` at the front of `mods.txt`; an existing entry is never
+overridden by automatic deployment. Preflight does not treat user-controlled
+enablement as a payload mismatch.
+
+For an explicitly authorized local activation, use the `activate` action in
+`tools/release_session.py` with the UE4SS `Mods/mods.txt` path. It places
+`UE4SSLuaEventBridge : 1` before other mod entries so Lua consumers start after
+the native bridge. Activation is idempotent, preserves foreign lines and their
+relative order, records a verified backup outside the Mods tree, uses an atomic
+replacement, and refuses to run while Dawnwalker is active. A restart is needed
+after activation because UE4SS reads the load list during startup.
 
 Use `tools/deployment_preflight.py` for on-disk comparisons and
 `tools/release_session.py` for guarded deployment or launch. Deployment backups

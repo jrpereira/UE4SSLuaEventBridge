@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -20,6 +21,19 @@
 namespace UE4SSLuaEventBridge
 {
 struct LuaSession;
+
+enum class DeliveryFault : uint8_t { None, QueueCapacity, QueueException, CallbackError };
+const char* delivery_fault_reason(DeliveryFault fault);
+struct TargetDeliveryState {
+    std::atomic<DeliveryFault> fault{DeliveryFault::None};
+    bool notified{}; // Protected by backend mutex; never accessed by producers.
+    bool valid() const { return fault.load(std::memory_order_acquire) == DeliveryFault::None; }
+};
+struct TargetDeliveryFault {
+    LuaSession* session{};
+    uint64_t target{};
+    DeliveryFault reason{};
+};
 
 struct EnhancedInputEvent
 {
@@ -54,9 +68,11 @@ struct EnhancedInputTrace
 struct EnhancedInputDispatchState
 {
     std::atomic_bool accepting{false};
+    std::atomic_bool faults_pending{false};
     std::atomic_bool clone_created{false};
     std::atomic_uint64_t live_bindings{0};
     std::atomic_uint64_t next_event_sequence{1};
+    ConsumerBacklogCount consumer_backlog;
     QueueReadiness events_ready;
     QueueReadiness traces_ready;
     std::mutex mutex;
@@ -88,6 +104,8 @@ struct EnhancedInputSubscription
     EnhancedInputABI::TriggerEvent phase{EnhancedInputABI::TriggerEvent::None};
     EnhancedInputDebugInfo debug;
     std::atomic_bool active{true};
+    std::shared_ptr<TargetDeliveryState> delivery;
+    bool delivery_valid() const { return !delivery || delivery->valid(); }
 };
 
 class EnhancedInputBackend
@@ -100,9 +118,16 @@ public:
     EnhancedInputBackend& operator=(const EnhancedInputBackend&) = delete;
 
     void initialize();
+    std::string enable_delivery_faults(LuaSession& session, uint64_t target);
+    std::pair<bool, const char*> target_delivery_valid(LuaSession& session, uint64_t target) const;
+    void report_delivery_fault(const EnhancedInputSubscription& subscription, DeliveryFault reason);
+    std::optional<TargetDeliveryFault> take_delivery_fault();
     void set_queue_limit(std::size_t limit);
     struct QueueStats { std::size_t queued, high_water; uint64_t rejected, traces_rejected; };
     QueueStats queue_stats() const;
+    void consumer_events_remaining(std::size_t count) {
+        dispatch_state_->consumer_backlog.remaining(count);
+    }
     // Returns false when Unreal still owns one or more native binding objects.
     // In that case the containing DLL must remain loaded until process exit.
     [[nodiscard]] bool shutdown();
@@ -123,7 +148,7 @@ public:
         EnhancedInputABI::TriggerEvent phase,
         EnhancedInputDebugInfo debug = {});
     bool unsubscribe(LuaSession& session, uint64_t id);
-    std::size_t unsubscribe_all(LuaSession& session);
+    std::size_t unsubscribe_all(LuaSession& session, bool preserve_targets = false);
     void deactivate(LuaSession& session, uint64_t id);
     void deactivate_all(LuaSession& session);
 
@@ -147,6 +172,8 @@ private:
         LuaSession* session{};
         RC::Unreal::FWeakObjectPtr component;
         std::string component_path_utf8;
+        std::shared_ptr<TargetDeliveryState> delivery;
+        bool has_bound{};
     };
     struct LiveBinding
     {

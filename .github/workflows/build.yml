@@ -35,6 +35,9 @@ jobs:
         run: |
           ./tests/ReleaseMetadataTests.ps1
           ./tests/PackageReleaseTests.ps1
+      - name: Native lifecycle memory-safety tests
+        shell: pwsh
+        run: ./tests/NativeQueueSanitizerTests.ps1
       - name: Configure DLL
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DUE4SSLEB_BUILD_TESTS=OFF
       - name: Build

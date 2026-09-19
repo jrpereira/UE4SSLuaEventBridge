@@ -80,6 +80,26 @@ void append_debug_text(std::string& output, std::string_view value)
 }
 }
 
+const char* delivery_fault_reason(DeliveryFault fault)
+{
+    switch (fault) {
+    case DeliveryFault::QueueCapacity: return "queue_capacity_exceeded";
+    case DeliveryFault::QueueException: return "queue_exception";
+    case DeliveryFault::CallbackError: return "callback_error";
+    default: return "healthy";
+    }
+}
+
+static void latch_delivery_fault(const std::shared_ptr<EnhancedInputDispatchState>& dispatch,
+                                 const std::shared_ptr<TargetDeliveryState>& delivery,
+                                 DeliveryFault reason)
+{
+    if (!delivery) return; // Legacy targets retain their existing behavior.
+    auto expected = DeliveryFault::None;
+    if (delivery->fault.compare_exchange_strong(expected, reason, std::memory_order_acq_rel))
+        dispatch->faults_pending.store(true, std::memory_order_release);
+}
+
 void write_debug_trace(
     const std::shared_ptr<EnhancedInputDispatchState>& dispatch_state,
     LuaSession* session,
@@ -206,7 +226,7 @@ public:
             dispatch_state_, owner_->session, owner_->debug,
             "native_delegate_entered", owner_->phase_name, sequence);
 
-        if (!owner_->active.load(std::memory_order_acquire))
+        if (!owner_->active.load(std::memory_order_acquire) || !owner_->delivery_valid())
         {
             write_debug_trace(
                 dispatch_state_, owner_->session, owner_->debug,
@@ -238,7 +258,7 @@ public:
             std::string_view rejection_reason;
             {
                 std::scoped_lock lock(dispatch_state_->mutex);
-                if (!owner_->active.load(std::memory_order_acquire))
+                if (!owner_->active.load(std::memory_order_acquire) || !owner_->delivery_valid())
                 {
                     rejection_reason = "binding_inactive";
                 }
@@ -258,6 +278,7 @@ public:
                     else
                     {
                         rejection_reason = "queue_capacity_exceeded";
+                        latch_delivery_fault(dispatch_state_, owner_->delivery, DeliveryFault::QueueCapacity);
                         // One visible diagnostic per overflow episode, even with
                         // debug disabled. Never execute Lua on this producer.
                         if (dispatch_state_->event_capacity.warning_pending &&
@@ -288,6 +309,7 @@ public:
         {
             // Never unwind through Unreal's input dispatcher. An allocation
             // failure disables this subscription until game-thread cleanup.
+            latch_delivery_fault(dispatch_state_, owner_->delivery, DeliveryFault::QueueException);
             owner_->active.store(false, std::memory_order_release);
             write_debug_trace(
                 dispatch_state_, owner_->session, owner_->debug,
@@ -337,6 +359,55 @@ void EnhancedInputBackend::initialize()
     initialized_.store(true, std::memory_order_release);
 }
 
+std::string EnhancedInputBackend::enable_delivery_faults(LuaSession& session, uint64_t target)
+{
+    if (!RC::Unreal::IsInGameThread()) return "delivery fault registration must run on the Unreal game thread";
+    std::scoped_lock lock(mutex_);
+    const auto found = targets_.find(target);
+    if (!available() || found == targets_.end() || found->second.session != &session || inactive_sessions_.contains(&session))
+        return "target is unknown or stopping";
+    if (found->second.delivery) return "delivery fault policy already registered";
+    if (found->second.has_bound) return "register delivery fault policy before binding actions";
+    found->second.delivery = std::make_shared<TargetDeliveryState>();
+    return {};
+}
+
+std::pair<bool, const char*> EnhancedInputBackend::target_delivery_valid(LuaSession& session, uint64_t target) const
+{
+    std::scoped_lock lock(mutex_);
+    const auto found = targets_.find(target);
+    if (!available() || found == targets_.end() || found->second.session != &session || inactive_sessions_.contains(&session))
+        return {false, "target is unknown or stopping"};
+    const auto& delivery = found->second.delivery;
+    if (!delivery) return {false, "delivery fault policy is not enabled"};
+    const auto reason = delivery->fault.load(std::memory_order_acquire);
+    return {reason == DeliveryFault::None, delivery_fault_reason(reason)};
+}
+
+void EnhancedInputBackend::report_delivery_fault(const EnhancedInputSubscription& subscription, DeliveryFault reason)
+{
+    latch_delivery_fault(dispatch_state_, subscription.delivery, reason);
+}
+
+std::optional<TargetDeliveryFault> EnhancedInputBackend::take_delivery_fault()
+{
+    if (!dispatch_state_->faults_pending.load(std::memory_order_acquire)) return {};
+    if (!dispatch_state_->faults_pending.exchange(false, std::memory_order_acq_rel)) return {};
+    std::scoped_lock lock(mutex_);
+    if (!available()) return {};
+    for (auto& [id, target] : targets_) {
+        if (!target.delivery || target.delivery->notified || inactive_sessions_.contains(target.session)) continue;
+        const auto fault = target.delivery->fault.load(std::memory_order_acquire);
+        if (fault == DeliveryFault::None) continue;
+        target.delivery->notified = true;
+        // Continue the rare scan for other faulted targets. A concurrent producer
+        // can also publish here; never clear its flag after scanning.
+        dispatch_state_->faults_pending.store(true, std::memory_order_release);
+        return TargetDeliveryFault{target.session, id, fault};
+    }
+    return {};
+}
+
 void EnhancedInputBackend::set_queue_limit(std::size_t limit)
 {
     std::scoped_lock lock(dispatch_state_->mutex);
@@ -346,7 +417,7 @@ void EnhancedInputBackend::set_queue_limit(std::size_t limit)
 EnhancedInputBackend::QueueStats EnhancedInputBackend::queue_stats() const
 {
     std::scoped_lock lock(dispatch_state_->mutex);
-    return {dispatch_state_->events.size(), dispatch_state_->event_capacity.high_water,
+    return {dispatch_state_->consumer_backlog.total(dispatch_state_->events.size()), dispatch_state_->event_capacity.high_water,
         dispatch_state_->event_capacity.rejected, dispatch_state_->trace_capacity.rejected};
 }
 
@@ -614,6 +685,8 @@ std::pair<uint64_t, std::string> EnhancedInputBackend::subscribe(
                        std::to_string(target_id)};
     }
 
+    if (target_it->second.delivery && !target_it->second.delivery->valid())
+        return {0, "target delivery is invalid; close and recreate the target"};
     auto* component = target_it->second.component.Get();
     if (!validate_component(component))
     {
@@ -632,6 +705,7 @@ std::pair<uint64_t, std::string> EnhancedInputBackend::subscribe(
     auto subscription = std::make_shared<EnhancedInputSubscription>();
     subscription->id = next_subscription_.fetch_add(1);
     subscription->target = target_id;
+    subscription->delivery = target_it->second.delivery;
     subscription->session = &session;
     subscription->callback_token = callback_token;
     subscription->action_path_utf8 = std::move(action_path);
@@ -663,6 +737,7 @@ std::pair<uint64_t, std::string> EnhancedInputBackend::subscribe(
         return {0, "Enhanced Input native binding creation failed"};
     }
 
+    target_it->second.has_bound = true;
     LiveBinding live{};
     live.component.assign(component);
     live.binding = binding;
@@ -721,7 +796,7 @@ bool EnhancedInputBackend::unsubscribe(LuaSession& session, uint64_t id)
     return unsubscribe_locked(session, id);
 }
 
-std::size_t EnhancedInputBackend::unsubscribe_all(LuaSession& session)
+std::size_t EnhancedInputBackend::unsubscribe_all(LuaSession& session, bool preserve_targets)
 {
     std::scoped_lock lock(mutex_);
     collect_inactive_locked();
@@ -740,7 +815,7 @@ std::size_t EnhancedInputBackend::unsubscribe_all(LuaSession& session)
 
     for (auto it = targets_.begin(); it != targets_.end();)
     {
-        if (it->second.session == &session)
+        if (!preserve_targets && it->second.session == &session)
         {
             it = targets_.erase(it);
         }
@@ -832,20 +907,8 @@ std::vector<EnhancedInputEvent> EnhancedInputBackend::take_events()
     {
         std::scoped_lock lock(dispatch_state_->mutex);
         result = drain_queue(dispatch_state_->events, dispatch_state_->spare_events);
+        dispatch_state_->consumer_backlog.remaining(result.size());
         dispatch_state_->events_ready.drained();
-    }
-    for (const auto& event : result)
-    {
-        if (event.owner)
-        {
-            write_debug_trace(
-                dispatch_state_,
-                event.owner->session,
-                event.owner->debug,
-                "event_dequeued",
-                event.owner->phase_name,
-                event.sequence);
-        }
     }
     return result;
 }
