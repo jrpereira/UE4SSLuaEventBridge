@@ -3,6 +3,7 @@ __UE4SSLuaEventBridge_SessionId = nil
 
 local __callbacks = {}
 local __bindings = {}
+local __targetFaultHandlers = {}
 local __nextCallbackToken = 0
 
 local function __forget(handle)
@@ -28,6 +29,7 @@ end
 local function __clearCallbacks()
     __callbacks = {}
     __bindings = {}
+    __targetFaultHandlers = {}
 end
 
 local function __traceback(message)
@@ -40,6 +42,13 @@ end
 local function __dispatch(
     token, handle, sourceAction, phaseName, elapsed, triggered, x, y, z, valueType,
     eventSequence)
+    if token == -1 then
+        local handler = __targetFaultHandlers[handle]
+        __targetFaultHandlers[handle] = nil -- One notification, even if handler throws.
+        __forgetTarget(handle)
+        if handler ~= nil then handler({target = handle, reason = sourceAction}) end
+        return
+    end
     if token == 0 then
         print(handle)
         return
@@ -150,7 +159,7 @@ local bridge = {
     end,
     GetCapabilities = function()
         local api, enhancedInput, explicitTarget, helpers, dynamicInput,
-            triggerTap, triggerHold, detailedErrors, debugTracing, target, bindingSnapshot =
+            triggerTap, triggerHold, detailedErrors, debugTracing, target, bindingSnapshot, targetDeliveryFaults =
             UE4SSLuaEventBridge_GetCapabilities()
         return {
             api = api,
@@ -164,7 +173,20 @@ local bridge = {
             debug_tracing = debugTracing,
             target_ue4ss_commit = target,
             binding_snapshot = bindingSnapshot == true,
+            target_delivery_faults = targetDeliveryFaults == true,
         }
+    end,
+    SetTargetDeliveryFaultHandler = function(target, callback)
+        if not __positiveInteger(target) then return false, "target must be a positive integer" end
+        if type(callback) ~= "function" then return false, "callback must be a function" end
+        local enabled, why = UE4SSLuaEventBridge_EnableTargetDeliveryFaults(__session, target)
+        if not enabled then return false, why end
+        __targetFaultHandlers[target] = callback
+        return true
+    end,
+    IsTargetDeliveryValid = function(target)
+        if not __positiveInteger(target) then return false, "target must be a positive integer" end
+        return UE4SSLuaEventBridge_IsTargetDeliveryValid(__session, target)
     end,
     OpenInputComponent = function(componentPath)
         if type(componentPath) ~= "string" or #componentPath < 1 or #componentPath > 512 then
@@ -189,6 +211,7 @@ local bridge = {
             UE4SSLuaEventBridge_CloseInputComponent(__session, targetHandle)
         if closed then
             __forgetTarget(targetHandle)
+            __targetFaultHandlers[targetHandle] = nil
         end
         return closed, closeError
     end,
@@ -694,8 +717,12 @@ local function __closeHelperScopes()
     end
     local errors = {}
     for _, scope in ipairs(scopes) do
-        local closed, closeError = scope:Close()
-        if not closed then errors[#errors + 1] = closeError end
+        local called, closed, closeError = pcall(scope.Close, scope)
+        if not called then
+            errors[#errors + 1] = tostring(closed)
+        elseif not closed then
+            errors[#errors + 1] = tostring(closeError or "failed to close helper input scope")
+        end
     end
     local nativeRemoved = 0
     for _, record in ipairs(records) do
@@ -706,10 +733,28 @@ local function __closeHelperScopes()
 end
 
 bridge.UnbindAll = function()
+    local onGameThread, threadError = __onGameThread("UnbindAll")
+    if not onGameThread then return 0, false, threadError end
+    -- Stop delivery even if removal fails; native ownership remains retryable.
+    __clearCallbacks()
     local helpersClosed, helperError, helperCount = __closeHelperScopes()
-    local count, completed, nativeError = UE4SSLuaEventBridge_UnbindAll(__session)
+    local removeNative = helpersClosed and UE4SSLuaEventBridge_UnbindAll
+        or UE4SSLuaEventBridge_UnbindAllPreserveTargets
+    local count, completed, nativeError = removeNative(__session)
     count = count or 0
-    if completed then __clearCallbacks() end
+    if completed and not helpersClosed then
+        -- Native bulk removal consumed these handles. Preserve context records
+        -- and targets, but never retry an already-removed subscription.
+        for scope in pairs(__inputScopes) do
+            local state = __scopeStates[scope]
+            local function removed(record)
+                record.native_handle = nil
+                record.native_handles = {}
+            end
+            for _, record in pairs(state.bindings) do removed(record) end
+            for _, record in ipairs(state.orphans) do removed(record) end
+        end
+    end
 
     local errors = {}
     if not helpersClosed then
@@ -728,6 +773,20 @@ bridge.UnsubscribeAll = bridge.UnbindAll
 
 -- Used by the native Lua-stop path only when shutdown occurs on the game thread.
 __UE4SSLuaEventBridge_CloseHelperScopes = __closeHelperScopes
+
+-- execute_string discards return values. The native stop caller must receive an
+-- exception when cleanup fails, rather than silently discarding false,error.
+__UE4SSLuaEventBridge_StopHelperScopes = function()
+    local called, closed, cleanupError = pcall(__closeHelperScopes)
+    if not called then cleanupError = closed end
+    if not called or not closed then
+        local message = "[UE4SSLuaEventBridge] Lua-stop helper cleanup incomplete: "
+            .. tostring(cleanupError or "unknown cleanup failure")
+        pcall(print, message)
+        error(message, 0)
+    end
+    return true
+end
 UE4SSLuaEventBridge = bridge
 
 return __dispatch

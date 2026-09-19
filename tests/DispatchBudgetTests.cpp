@@ -111,4 +111,69 @@ int main() {
     ready.publish();
     dispatch();
     assert(delivered_ids.back() == 10000 && !ready.pending() && pending.empty());
+
+    // Exercise the production dispatch loop: simulated expensive preparation
+    // must only run for admitted items, even with a large pending batch.
+    DispatchBacklog<int> traced;
+    std::vector<int> burst;
+    for (int i = 0; i < 10000; ++i) burst.push_back(i);
+    traced.load(std::move(burst));
+    auto now = zero;
+    int prepared = 0, completed = 0;
+    const auto consume = [&](int item) {
+        assert(item == completed);
+        ++prepared;
+        now += 1500us; // Trace/preparation cost counts toward the same budget.
+        ++completed;
+        return true;
+    };
+    DispatchBudget traced_budget(now, 256, 2000us);
+    assert(dispatch_budgeted(traced, traced_budget, consume, [&] { return now; }) == 2);
+    assert(prepared == 2 && completed == 2 && traced.size() == 9998);
+    // Already-expired setup still permits one item of progress, not a batch.
+    DispatchBudget expired(now, 256, 2000us);
+    now += 5ms;
+    assert(dispatch_budgeted(traced, expired, consume, [&] { return now; }) == 1);
+    assert(prepared == 3 && completed == 3 && traced.size() == 9997);
+    DispatchBudget count_only(now, 1, 0us);
+    assert(dispatch_budgeted(traced, count_only, consume, [&] { return now; }) == 1);
+    assert(prepared == 4 && completed == 4);
+
+    // Use the same dispatcher as BridgeMod. Cancellation and session teardown
+    // suppress old callbacks without charging the live callback allowance.
+    struct Item { int id; bool binding_active; bool session_active; };
+    DispatchBacklog<Item> cancelled;
+    std::vector<Item> stale;
+    for (int i = 0; i < 65536; ++i) stale.push_back({i, false, true});
+    cancelled.load(std::move(stale));
+    now = zero;
+    int examined = 0;
+    std::vector<int> live;
+    auto route = [&](Item item) {
+        ++examined;
+        now += 1us; // Includes discard work, not just callback work.
+        if (!item.binding_active || !item.session_active) return false;
+        live.push_back(item.id);
+        return true;
+    };
+    DispatchBudget cancel_budget(now, 256, 2000us);
+    assert(dispatch_budgeted(cancelled, cancel_budget, route, [&] { return now; }) == 0);
+    assert(examined == 2000 && cancelled.size() == 63536 && live.empty());
+    // An expired pass processes exactly one canceled entry, then stops.
+    DispatchBudget cancel_expired(now, 256, 2000us);
+    now += 3ms;
+    assert(dispatch_budgeted(cancelled, cancel_expired, route, [&] { return now; }) == 0);
+    assert(examined == 2001 && cancelled.size() == 63535);
+    // No time limit: discard all stale entries despite the live count limit.
+    DispatchBudget discard_all(now, 2, 0us);
+    assert(dispatch_budgeted(cancelled, discard_all, route, [&] { return now; }) == 0);
+    assert(cancelled.empty() && examined == 65536);
+    // Model producer refill with interleaved dead bindings, stopped sessions,
+    // and new binding IDs. New live events retain FIFO and the count cap.
+    cancelled.load({{100, false, true}, {101, true, false}, {102, true, true},
+                    {103, false, true}, {104, true, true}, {105, true, true}});
+    assert(dispatch_budgeted(cancelled, discard_all, route, [&] { return now; }) == 2);
+    assert((live == std::vector<int>{102, 104}) && cancelled.size() == 1);
+    assert(dispatch_budgeted(cancelled, discard_all, route, [&] { return now; }) == 1);
+    assert((live == std::vector<int>{102, 104, 105}) && cancelled.empty());
 }

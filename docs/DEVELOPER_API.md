@@ -156,6 +156,72 @@ is known.
 The compatibility aliases `SubscribeEnhancedInput`, `Unsubscribe`, and
 `UnsubscribeAll` remain available.
 
+## Opt-in target delivery faults
+
+API 4 exposes `GetCapabilities().target_delivery_faults == true` when the
+following additive methods are available. Older runtimes must be capability-gated.
+Use a dedicated primitive target for inputs that must stop after delivery loss.
+
+```lua
+local target = assert(bridge.OpenInputComponent(componentPath))
+local ok, err = bridge.SetTargetDeliveryFaultHandler(target, function(fault)
+    -- Runs on the UE4SS update thread, not the native input producer.
+    -- Clear consumer held/display state and invalidate its local lifecycle epoch.
+    resetInputState(fault.reason)
+    -- Schedule owned mapping/context cleanup on the game thread.
+end)
+assert(ok, err)
+-- Bind all phases, then activate the caller-owned mapping context.
+```
+
+`SetTargetDeliveryFaultHandler(target, callback)` returns `true`, or `false,
+errorMessage`. It requires the game thread and a target owned by the current
+Lua session. Register once, before the target has ever successfully bound an
+action. There is no handler replacement, opt-out or automatic rearm.
+
+The first queue-capacity rejection, queue allocation/production exception, or
+Lua action-callback error permanently invalidates the opted-in target. Reasons
+are `queue_capacity_exceeded`, `queue_exception`, and `callback_error`.
+All its subscriptions stop producing/delivering events, including older queued
+`Started` events. Non-opted-in targets retain their previous behavior; unrelated
+targets are not invalidated. The first reason is retained and notifications
+coalesce to one attempt per target.
+
+The handler receives `{target = targetHandle, reason = reason}` independently
+of event/trace queue capacity. The bridge checks pending fault notifications
+before ordinary dispatch, including when no new event arrives, and between
+queued deliveries. Closing the target or stopping its session cancels pending
+notification. A throwing handler is reported to the native debugger and is not
+retried; the target stays invalid. Notification can be delayed by the normal
+20 Hz dispatch schedule, host scheduling or an already-running Lua callback.
+Callbacks already executing are not preempted.
+
+`IsTargetDeliveryValid(target)` returns `true` for an opted-in target with no
+known delivery fault. Otherwise it returns `false, reason`; unknown, closed,
+stopped, cross-session and non-opted-in targets also return false. This query
+is thread-safe and does not access Unreal objects. It checks delivery state,
+not component validity, key actuation, application focus or mapping activation.
+Call it on demand immediately before a scheduled side effect, alongside the
+consumer's captured lifecycle epoch and gameplay gates:
+
+```lua
+local capturedTarget, capturedEpoch = target, inputEpoch
+ExecuteInGameThread(function()
+    if inputEpoch ~= capturedEpoch then return end
+    if not bridge.IsTargetDeliveryValid(capturedTarget) then return end
+    -- Perform an otherwise validated effect here. This is not a physical-key check.
+end)
+```
+
+Target IDs are never reused within the bridge lifetime. For recovery, explicitly
+close the old target, reset consumer state, create a new target, register its
+handler and recreate subscriptions before activating input. The caller retains
+ownership of its Input Actions and mapping contexts and must clean them up.
+This policy does not resolve off-thread context cleanup, focus loss, missing
+engine phase events, or simultaneous physical-release/side-effect ordering.
+It adds no timer or consumer polling requirement. Healthy-path notification
+checks use an atomic read; only fault processing scans target records.
+
 ## Input helpers
 
 Helpers create private transient Enhanced Input objects so the mod can bind an
@@ -423,3 +489,20 @@ The following invariants apply:
 The helpers do not add controller discovery, UObject listeners,
 `ProcessEvent` hooks, scanning, polling, automatic rebinding, gameplay-state
 filtering, or game-specific behavior.
+
+### Native candidate validation
+
+`python tools/native_candidate.py --working . --output build/candidate-unique`
+requires a fresh output directory and Lua 5.4 (`--lua PATH` overrides discovery).
+It builds the production DLL in Release mode, builds the seven Windows native test targets
+separately in Debug mode so assertions execute, and runs both Lua suites from the
+repository root. A failed test or missing test suite prevents certification.
+Candidate manifests record this test configuration and suite list. Older manifests
+without that evidence must be regenerated; they are not accepted as tested builds.
+
+`UnbindAll()` disables callback delivery before attempting game-thread cleanup.
+If helper cleanup fails, bulk native removal preserves targets for retry and
+successful native removal clears the helper's obsolete subscription handles.
+Retry `Close()` or `UnbindAll()` to finish removing the retained contexts and
+targets. Failed attempts do not resume callback delivery. This does not change
+the unresolved off-thread Lua-stop context-cleanup limitation.

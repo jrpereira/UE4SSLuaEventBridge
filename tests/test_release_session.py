@@ -39,12 +39,30 @@ class ReleaseSessionTests(unittest.TestCase):
                 staged, installed, manifest = self.fixture(root)
                 (installed/'enabled.txt').unlink()
                 if fresh:
-                    installed = root/'fresh-install'
+                    installed = root/'game/Mods/Example'
                 session.deploy(manifest, staged, installed, root/'records', lambda:None)
                 self.assertEqual((installed/'main.lua').read_text(), 'new code')
                 self.assertFalse((installed/'enabled.txt').exists())
+                if fresh:
+                    self.assertEqual((root/'game/Mods/mods.txt').read_text(), 'Example : 1\n')
+                else:
+                    self.assertFalse((root/'mods.txt').exists())
                 result = session.compare(manifest, staged, installed)
                 self.assertFalse(result['needs_attention'])
+
+    def test_fresh_deployment_preserves_explicit_disabled_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            staged, _, manifest = self.fixture(root)
+            installed = root/'game/Mods/Example'
+            mods = root/'game/Mods/mods.txt'
+            mods.parent.mkdir(parents=True)
+            original = b'Other : 1\r\nExample : 0\r\n'
+            mods.write_bytes(original)
+            session.deploy(manifest, staged, installed, root/'records', lambda:None)
+            self.assertEqual(mods.read_bytes(), original)
+            record = next((root/'records').glob('deploy-*/result.json'))
+            self.assertIn('"status": "preserved-disabled"', record.read_text())
 
     def test_running_game_and_tampered_stage_never_deploy(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -66,6 +84,68 @@ class ReleaseSessionTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 session.deploy(manifest, staged, installed, root/'records', lambda:next(calls))
             self.assertEqual((installed/'main.lua').read_text(), 'old code')
+            record = next((root/'records').glob('*/result.json'))
+            self.assertIn('"status": "incomplete"', record.read_text())
+
+    def test_activation_is_ordered_idempotent_and_preserves_foreign_entries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mods = root/'game/Mods/mods.txt'
+            mods.parent.mkdir(parents=True)
+            original = (b'; retained header\r\nOtherMod : 1\r\n'
+                        b'UE4SSLuaEventBridge : 0 ; retained note\r\nKeybinds : 1\r\n')
+            mods.write_bytes(original)
+            backup = session.activate_mod(
+                mods, 'UE4SSLuaEventBridge', root/'records', lambda:None)
+            self.assertEqual(
+                mods.read_bytes(),
+                (b'; retained header\r\nUE4SSLuaEventBridge : 1 ; retained note\r\n'
+                 b'OtherMod : 1\r\nKeybinds : 1\r\n'))
+            self.assertEqual((backup/'mods.txt.before').read_bytes(), original)
+            self.assertIn('"status": "activated"', (backup/'result.json').read_text())
+            before_records = sorted((root/'records').iterdir())
+            result = session.activate_mod(
+                mods, 'UE4SSLuaEventBridge', root/'records', lambda:None)
+            self.assertEqual(result['status'], 'already-active')
+            self.assertEqual(sorted((root/'records').iterdir()), before_records)
+
+    def test_activation_handles_empty_crlf_file_and_rejects_unsafe_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mods = root/'game/Mods/mods.txt'
+            mods.parent.mkdir(parents=True)
+            mods.write_bytes(b'\r\n')
+            session.activate_mod(mods, 'UE4SSLuaEventBridge', root/'records', lambda:None)
+            self.assertEqual(mods.read_bytes(), b'\r\nUE4SSLuaEventBridge : 1\r\n')
+
+            enabled_late = b'Other : 1\r\nUE4SSLuaEventBridge : 1\r\n'
+            self.assertEqual(
+                session.activated_mods_bytes(
+                    enabled_late, 'UE4SSLuaEventBridge', preserve_disabled=True),
+                b'UE4SSLuaEventBridge : 1\r\nOther : 1\r\n')
+
+            duplicate = (b'UE4SSLuaEventBridge : 1\r\n'
+                         b'ue4ssluaeventbridge : 0\r\n')
+            mods.write_bytes(duplicate)
+            with self.assertRaisesRegex(ValueError, 'duplicate entries'):
+                session.activate_mod(mods, 'UE4SSLuaEventBridge', root/'records-duplicate', lambda:None)
+            self.assertEqual(mods.read_bytes(), duplicate)
+
+            with self.assertRaisesRegex(RuntimeError, 'Close the game'):
+                session.activate_mod(mods, 'AnotherMod', root/'records-running', lambda:{'pid':1})
+            self.assertEqual(mods.read_bytes(), duplicate)
+
+    def test_activation_aborts_if_game_starts_before_replace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mods = root/'game/Mods/mods.txt'
+            mods.parent.mkdir(parents=True)
+            original = b'OtherMod : 1\r\n'
+            mods.write_bytes(original)
+            calls = iter([None, {'pid':1}])
+            with self.assertRaisesRegex(RuntimeError, 'started during activation'):
+                session.activate_mod(mods, 'UE4SSLuaEventBridge', root/'records', lambda:next(calls))
+            self.assertEqual(mods.read_bytes(), original)
             record = next((root/'records').glob('*/result.json'))
             self.assertIn('"status": "incomplete"', record.read_text())
 

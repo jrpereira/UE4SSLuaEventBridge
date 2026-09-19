@@ -33,6 +33,8 @@ extern "C" __declspec(dllimport) int UE4SSLEB_WINAPI GetModuleHandleExW(
 extern "C" __declspec(dllimport) unsigned long UE4SSLEB_WINAPI GetEnvironmentVariableA(
     const char* name, char* buffer, unsigned long size);
 
+extern "C" __declspec(dllimport) void UE4SSLEB_WINAPI OutputDebugStringA(const char* message);
+
 #undef UE4SSLEB_WINAPI
 
 namespace UE4SSLuaEventBridge
@@ -171,25 +173,29 @@ public:
     void on_update() override
     {
         if (!queue_schedule_.due(UE4SSLuaEventBridge::QueueDispatchSchedule::Clock::now())) return;
+        flush_delivery_faults();
+        using Budget = UE4SSLuaEventBridge::DispatchBudget;
+        const Budget budget(Budget::Clock::now(), max_events_per_pass_, std::chrono::microseconds(max_dispatch_us_));
         if (pending_events_.empty())
         {
             backend_.recycle_events(pending_events_.release_buffer());
             pending_events_.load(backend_.take_events());
         }
-        using Budget = UE4SSLuaEventBridge::DispatchBudget;
-        const Budget budget(Budget::Clock::now(), max_events_per_pass_, std::chrono::microseconds(max_dispatch_us_));
-        std::size_t processed{};
-        while (!pending_events_.empty() && budget.permits(processed, Budget::Clock::now()))
-        {
-            auto event = pending_events_.pop();
-            ++processed;
+        UE4SSLuaEventBridge::dispatch_budgeted(pending_events_, budget, [&](auto event) {
+            backend_.consumer_events_remaining(pending_events_.size());
+            flush_delivery_faults();
             const auto& subscription = event.owner;
             auto* session = subscription ? subscription->session : nullptr;
             if (!subscription)
             {
-                continue;
+                return false;
             }
-            if (!subscription->active.load())
+            if (session)
+            {
+                backend_.trace(*session, subscription->debug, "event_dequeued",
+                               subscription->phase_name, event.sequence);
+            }
+            if (!subscription->active.load() || !subscription->delivery_valid())
             {
                 if (session)
                 {
@@ -201,7 +207,7 @@ public:
                         event.sequence,
                         "binding_inactive");
                 }
-                continue;
+                return false;
             }
             if (!session || !session->active.load() || !session->lua)
             {
@@ -215,7 +221,7 @@ public:
                         event.sequence,
                         "lua_session_inactive");
                 }
-                continue;
+                return false;
             }
 
             try
@@ -259,7 +265,9 @@ public:
                 // Lua callbacks run on UE4SS's event-loop thread. Deactivate
                 // immediately, then let the next game-thread bridge operation
                 // detach the native binding.
+                backend_.report_delivery_fault(*subscription, UE4SSLuaEventBridge::DeliveryFault::CallbackError);
                 backend_.deactivate(*session, subscription->id);
+                flush_delivery_faults();
             }
             catch (...)
             {
@@ -270,9 +278,12 @@ public:
                     subscription->phase_name,
                     event.sequence,
                     "unknown_lua_exception");
+                backend_.report_delivery_fault(*subscription, UE4SSLuaEventBridge::DeliveryFault::CallbackError);
                 backend_.deactivate(*session, subscription->id);
+                flush_delivery_faults();
             }
-        }
+            return true; // Failed callback attempts also consume the count allowance.
+        }, [] { return Budget::Clock::now(); });
         flush_debug_traces();
     }
 
@@ -283,6 +294,8 @@ public:
         session->lua = &lua;
         auto* session_ptr = session.get();
 
+        lua.register_function("UE4SSLuaEventBridge_EnableTargetDeliveryFaults", &enable_target_delivery_faults);
+        lua.register_function("UE4SSLuaEventBridge_IsTargetDeliveryValid", &is_target_delivery_valid);
         lua.register_function("UE4SSLuaEventBridge_GetVersion", &get_version);
         lua.register_function("UE4SSLuaEventBridge_GetDispatchStats", &get_dispatch_stats);
         lua.register_function("UE4SSLuaEventBridge_GetCapabilities", &get_capabilities);
@@ -293,6 +306,7 @@ public:
         lua.register_function("UE4SSLuaEventBridge_BindAction", &bind_action);
         lua.register_function("UE4SSLuaEventBridge_Unbind", &unbind);
         lua.register_function("UE4SSLuaEventBridge_UnbindAll", &unbind_all);
+        lua.register_function("UE4SSLuaEventBridge_UnbindAllPreserveTargets", &unbind_all_preserve_targets);
         lua.register_function("UE4SSLuaEventBridge_TraceScope", &trace_scope);
 
         const auto session_script =
@@ -357,14 +371,21 @@ public:
             try
             {
                 lua.execute_string(
-                    "if __UE4SSLuaEventBridge_CloseHelperScopes ~= nil then "
-                    "__UE4SSLuaEventBridge_CloseHelperScopes() end");
+                    "if __UE4SSLuaEventBridge_StopHelperScopes ~= nil then "
+                    "__UE4SSLuaEventBridge_StopHelperScopes() end");
+            }
+            catch (const std::exception& error)
+            {
+                OutputDebugStringA("[UE4SSLuaEventBridge] Lua-stop helper cleanup failed: ");
+                OutputDebugStringA(error.what());
+                OutputDebugStringA("\n");
             }
             catch (...)
             {
-                // The native fail-safe below still detaches every action
-                // binding if reflected helper cleanup cannot complete.
+                OutputDebugStringA("[UE4SSLuaEventBridge] Lua-stop helper cleanup failed: unknown exception\n");
             }
+            // Native detachment is still required after a helper failure.
+            // It does not remove mapping contexts owned by the Lua helper.
             backend_.unsubscribe_all(*session);
             session->active.store(false, std::memory_order_release);
         }
@@ -402,15 +423,33 @@ private:
     UE4SSLuaEventBridge::DispatchBacklog<UE4SSLuaEventBridge::EnhancedInputEvent> pending_events_;
     UE4SSLuaEventBridge::DispatchBacklog<UE4SSLuaEventBridge::EnhancedInputTrace> pending_traces_;
 
+    void flush_delivery_faults()
+    {
+        while (auto fault = backend_.take_delivery_fault()) {
+            auto* session = fault->session;
+            if (!session || !session->active.load(std::memory_order_acquire) || !session->lua) continue;
+            try {
+                const auto& lua = *session->lua;
+                lua.registry().get_function_ref(session->dispatcher_ref);
+                lua.set_integer(-1); // Reserved out-of-band delivery-fault message.
+                lua.set_integer(static_cast<int64_t>(fault->target));
+                lua.set_string(UE4SSLuaEventBridge::delivery_fault_reason(fault->reason));
+                lua.call_function(3, 0);
+            } catch (...) {
+                OutputDebugStringA("[UE4SSLuaEventBridge] delivery fault handler failed; target remains disabled\n");
+            }
+        }
+    }
+
     void flush_debug_traces()
     {
+        using Budget = UE4SSLuaEventBridge::DispatchBudget;
+        const Budget budget(Budget::Clock::now(), 32, std::chrono::microseconds(250));
         if (pending_traces_.empty())
         {
             backend_.recycle_traces(pending_traces_.release_buffer());
             pending_traces_.load(backend_.take_traces());
         }
-        using Budget = UE4SSLuaEventBridge::DispatchBudget;
-        const Budget budget(Budget::Clock::now(), 32, std::chrono::microseconds(250));
         std::size_t processed{};
         while (!pending_traces_.empty() && budget.permits(processed, Budget::Clock::now()))
         {
@@ -467,7 +506,8 @@ private:
         lua.set_bool(true);
         lua.set_string("97b7e501");
         lua.set_bool(true); // Additive binding_snapshot capability.
-        return 11;
+        lua.set_bool(true); // Additive target_delivery_faults capability.
+        return 12;
     }
 
     static int is_in_game_thread(const Lua& lua)
@@ -495,6 +535,30 @@ private:
         const auto id = static_cast<uint64_t>(lua.get_integer(1));
         return active_mod->session_for_id(id);
     }
+
+    static int target_delivery_operation(const Lua& lua, bool enable)
+    {
+        auto* session = consume_session(lua);
+        if (!session) {
+            lua.set_bool(false); lua.set_string("Lua session is not registered or is stopping"); return 2;
+        }
+        const auto target = lua.get_integer(1);
+        if (target <= 0) {
+            lua.set_bool(false); lua.set_string("invalid target handle"); return 2;
+        }
+        if (enable) {
+            const auto error = active_mod->backend_.enable_delivery_faults(*session, static_cast<uint64_t>(target));
+            lua.set_bool(error.empty());
+            if (!error.empty()) { lua.set_string(error); return 2; }
+        } else {
+            const auto [valid, reason] = active_mod->backend_.target_delivery_valid(*session, static_cast<uint64_t>(target));
+            lua.set_bool(valid);
+            if (!valid) { lua.set_string(reason); return 2; }
+        }
+        return 1;
+    }
+    static int enable_target_delivery_faults(const Lua& lua) { return target_delivery_operation(lua, true); }
+    static int is_target_delivery_valid(const Lua& lua) { return target_delivery_operation(lua, false); }
 
     static int open_input_component(const Lua& lua)
     {
@@ -785,7 +849,10 @@ private:
         return 1;
     }
 
-    static int unbind_all(const Lua& lua)
+    static int unbind_all(const Lua& lua) { return unbind_all_impl(lua, false); }
+    static int unbind_all_preserve_targets(const Lua& lua) { return unbind_all_impl(lua, true); }
+
+    static int unbind_all_impl(const Lua& lua, bool preserve_targets)
     {
         if (!active_mod || !active_mod->backend_.available())
         {
@@ -811,7 +878,7 @@ private:
             return 3;
         }
 
-        lua.set_integer(static_cast<int64_t>(active_mod->backend_.unsubscribe_all(*session)));
+        lua.set_integer(static_cast<int64_t>(active_mod->backend_.unsubscribe_all(*session, preserve_targets)));
         lua.set_bool(true);
         return 2;
     }

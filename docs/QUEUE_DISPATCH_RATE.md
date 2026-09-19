@@ -17,9 +17,16 @@ The bridge creates no timer thread, sleeps, or catch-up bursts.
 
 Each eligible pass continues the oldest batch in order, subject to existing
 inactive-session/subscription and callback-error handling. The default allowance
-is 256 events or 2,000 microseconds per pass. Remaining events stay in the batch
+is 256 live callback attempts or 2,000 microseconds per pass. Canceled bindings
+and stopped sessions consume time but do not consume the callback-count allowance.
+A failed callback attempt still counts. The first-progress allowance applies to
+one examined entry, so an all-canceled batch cannot bypass the time limit. Remaining events stay in the batch
 for the next eligible pass; new batches never overtake them. There is no sleep
-between events. One slow Lua callback cannot be preempted by this allowance.
+between events. The time allowance starts before batch acquisition and buffer
+recycling. Dequeue tracing is performed only for each admitted event, inside the
+same budget; acquiring a batch does not format traces for the entire batch.
+The allowance is non-preemptive: preparation, lock waits, or one slow Lua callback
+can exceed it. At least one event is processed per nonempty pass to avoid starvation.
 
 Set `UE4SSLEB_MAX_EVENTS_PER_PASS` and `UE4SSLEB_MAX_DISPATCH_US` before startup
 to integers from 0 through 1,000,000. Zero disables that limit; setting both to
@@ -34,7 +41,11 @@ The consumer may also retain one previously drained batch, so the producer limit
 is not the total number of events held across both buffers.
 
 `UE4SSLuaEventBridge.GetDispatchStats()` returns process-wide `queued` (producer
-queue only), `queue_high_water`, `rejected_events` and `rejected_traces` counters.
+queue plus the retained consumer batch, excluding the event currently being
+processed), `queue_high_water` (producer queue only), `rejected_events` and
+`rejected_traces` counters. Canceled entries remain queued until discarded.
+The producer limit and high-water mark still describe producer capacity; total
+`queued` can exceed both while a previous batch is retained.
 Counters last for the bridge lifetime. Read them on demand; no diagnostic polling
 is added by the bridge. A rejection must be treated as an input delivery failure.
 
@@ -50,3 +61,9 @@ increase event latency or cause explicit rejections. Fewer checks do not by them
 
 API 4 and event payloads unchanged; dispatch statistics are additive.
 Deployment and in-game validation belong to COORDINATION.
+
+Opted-in primitive targets can register delivery-fault notifications separately
+from these counters (see DEVELOPER_API.md). A rejection permanently disables the
+affected target and its retained backlog; a coalesced reset notification is not
+stored in either bounded queue. It is serviced at the normal dispatch cadence,
+not synchronously from Unreal input. This does not guarantee focus-loss detection.

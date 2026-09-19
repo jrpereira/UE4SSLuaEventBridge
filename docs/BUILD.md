@@ -47,8 +47,8 @@ curated changelog. If that file is absent, GitHub-generated notes are used.
 ```sh
 git switch main
 git pull --ff-only
-git switch -c release/v0.3.4-rc.2
-git push origin release/v0.3.4-rc.2
+git switch -c release/v1.0.0
+git push origin release/v1.0.0
 ```
 
 ## Portable checks

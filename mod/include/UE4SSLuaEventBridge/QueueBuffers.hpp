@@ -14,6 +14,18 @@ public:
 private:
     std::atomic_bool pending_{false};
 };
+// Transfer and snapshot run under the producer mutex. Only the consumer writes
+// remaining outside it, after popping and before calling Lua. Statistics never
+// inspect the consumer vector or add a lock to per-event processing.
+class ConsumerBacklogCount {
+public:
+    void remaining(std::size_t count) { remaining_.store(count, std::memory_order_relaxed); }
+    std::size_t total(std::size_t producer) const {
+        return producer + remaining_.load(std::memory_order_relaxed);
+    }
+private:
+    std::atomic_size_t remaining_{0};
+};
 // Caller holds the queue mutex. Neither operation changes queued item order.
 template<class T> std::vector<T> drain_queue(std::vector<T>& queue, std::vector<T>& spare) {
     std::vector<T> batch;

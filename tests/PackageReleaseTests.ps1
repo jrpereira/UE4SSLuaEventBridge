@@ -30,7 +30,20 @@ try {
     catch {$rejected=$true}
     if(-not $rejected){throw 'Existing artifact overwritten'}
     if(-not (Get-Content -LiteralPath $result.checksum -Raw).StartsWith((Get-FileHash $result.archive -Algorithm SHA256).Hash.ToLowerInvariant())){throw 'Archive checksum mismatch'}
-    'Package allowlist, hashes and overwrite protection passed'
+
+    $validator=Join-Path $repo 'tools/test-release-archive.ps1'
+    & $validator -Archive $result.archive
+    foreach($forbidden in @('Tools/a.txt','UE4SSLuaEventBridge/tOoLs/a.txt','UE4SSLuaEventBridge/x/TOOLS/','UE4SSLuaEventBridge\Tools\a.txt')){
+        $bad=Join-Path $fixture ([guid]::NewGuid().ToString('N')+'.zip')
+        Copy-Item -LiteralPath $result.archive -Destination $bad
+        $zip=[IO.Compression.ZipFile]::Open($bad,[IO.Compression.ZipArchiveMode]::Update)
+        try {$zip.CreateEntry($forbidden)|Out-Null} finally {$zip.Dispose()}
+        $rejected=$false
+        try { & $validator -Archive $bad }
+        catch {if($_.Exception.Message -notlike 'Forbidden Tools directory:*'){throw};$rejected=$true}
+        if(-not $rejected){throw "Forbidden Tools entry accepted: $forbidden"}
+    }
+    'Package allowlist, Tools rejection, hashes and overwrite protection passed'
 } finally {
     $resolved=[IO.Path]::GetFullPath($fixture)
     if(-not $resolved.StartsWith($temporaryRoot,[StringComparison]::OrdinalIgnoreCase) -or

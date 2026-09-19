@@ -24,6 +24,7 @@ try {
         [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip,(Join-Path $root $relative),"UE4SSLuaEventBridge/$relative")|Out-Null
     }
 } finally {$zip.Dispose()}
+& (Join-Path $PSScriptRoot 'test-release-archive.ps1') -Archive $archive
 $manifest=[ordered]@{schema=1;product='UE4SSLuaEventBridge';version=$metadata.version;api=4;source_commit=$SourceCommit;target_ue4ss_commit='97b7e501';files=$files}
 $manifest|ConvertTo-Json -Depth 6|Set-Content -LiteralPath "$archive.manifest.json" -Encoding utf8
 $digest=(Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()

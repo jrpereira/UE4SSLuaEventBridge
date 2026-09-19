@@ -143,6 +143,17 @@ Mods/
     └── enabled.txt
 ```
 
+For deterministic startup before Lua mods that consume the bridge, add this as
+the first mod entry in `Mods/mods.txt`:
+
+```text
+UE4SSLuaEventBridge : 1
+```
+
+The packaged `enabled.txt` marker also enables the bridge, but UE4SS loads marker
+enabled mods in a separate pass with no defined ordering. A `mods.txt` entry is
+therefore preferred when another mod needs the bridge during its Lua-state setup.
+
 ## Documentation
 
 - [`docs/LUA_API.md`](docs/LUA_API.md) — public Lua contract
