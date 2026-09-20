@@ -55,13 +55,13 @@ not inspect loaded modules, read game logs or query a diagnostic bridge.
 Deployment never creates `enabled.txt`. Existing installations preserve their
 current marker and `mods.txt` state, including an explicit disabled entry. A
 genuinely fresh installation with no existing bridge entry receives
-`UE4SSLuaEventBridge : 1` at the front of `mods.txt`; an existing entry is never
+`_UE4SSLuaEventBridge : 1` at the front of `mods.txt`; an existing entry is never
 overridden by automatic deployment. Preflight does not treat user-controlled
 enablement as a payload mismatch.
 
 For an explicitly authorized local activation, use the `activate` action in
 `tools/release_session.py` with the UE4SS `Mods/mods.txt` path. It places
-`UE4SSLuaEventBridge : 1` before other mod entries so Lua consumers start after
+`_UE4SSLuaEventBridge : 1` before other mod entries so Lua consumers start after
 the native bridge. Activation is idempotent, preserves foreign lines and their
 relative order, records a verified backup outside the Mods tree, uses an atomic
 replacement, and refuses to run while Dawnwalker is active. A restart is needed

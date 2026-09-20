@@ -47,7 +47,7 @@ jobs:
         shell: pwsh
         run: |
           $metadata = & ./tools/release-metadata.ps1 -OutputFile $env:GITHUB_OUTPUT
-          & ./tools/package-release.ps1 -Distribution build/dist/UE4SSLuaEventBridge -OutputDirectory . -SourceCommit $env:GITHUB_SHA
+          & ./tools/package-release.ps1 -Distribution build/dist/_UE4SSLuaEventBridge -OutputDirectory . -SourceCommit $env:GITHUB_SHA
       - uses: actions/upload-artifact@v4
         with:
           name: UE4SSLuaEventBridge-${{ steps.metadata.outputs.tag }}

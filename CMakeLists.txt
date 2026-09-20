@@ -63,12 +63,12 @@ if(WIN32)
     set_target_properties(UE4SSLuaEventBridge PROPERTIES
         OUTPUT_NAME main
         PREFIX ""
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/dist/UE4SSLuaEventBridge/dlls"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/dist/_UE4SSLuaEventBridge/dlls"
     )
     add_custom_command(TARGET UE4SSLuaEventBridge POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/mod/enabled.txt"
-            "${CMAKE_BINARY_DIR}/dist/UE4SSLuaEventBridge/enabled.txt"
+            "${CMAKE_BINARY_DIR}/dist/_UE4SSLuaEventBridge/enabled.txt"
     )
 endif()
 
@@ -102,6 +102,10 @@ if(UE4SSLEB_BUILD_TESTS)
     target_compile_features(BindingSnapshotTests PRIVATE cxx_std_20)
     target_include_directories(BindingSnapshotTests PRIVATE mod/include)
     add_test(NAME BindingSnapshotTests COMMAND BindingSnapshotTests)
+    add_executable(LegacyInstallMigrationTests tests/LegacyInstallMigrationTests.cpp)
+    target_compile_features(LegacyInstallMigrationTests PRIVATE cxx_std_20)
+    target_include_directories(LegacyInstallMigrationTests PRIVATE mod/include)
+    add_test(NAME LegacyInstallMigrationTests COMMAND LegacyInstallMigrationTests)
     find_package(Threads REQUIRED)
     target_link_libraries(QueueBuffersTests PRIVATE Threads::Threads)
     set_tests_properties(QueueBuffersTests PROPERTIES TIMEOUT 20)
