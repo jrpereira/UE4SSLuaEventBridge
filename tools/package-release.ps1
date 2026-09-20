@@ -10,7 +10,7 @@ $files=@()
 foreach($relative in $paths){
     $path=Join-Path $root $relative
     if(-not (Test-Path -LiteralPath $path -PathType Leaf)){throw "Missing package payload: $relative"}
-    $files+=@{path="UE4SSLuaEventBridge/$relative";sha256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()}
+    $files+=@{path="_UE4SSLuaEventBridge/$relative";sha256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()}
 }
 New-Item -ItemType Directory -Force $OutputDirectory|Out-Null
 $archive=Join-Path $OutputDirectory $metadata.archive
@@ -21,7 +21,7 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip=[IO.Compression.ZipFile]::Open($archive,[IO.Compression.ZipArchiveMode]::Create)
 try {
     foreach($relative in $paths){
-        [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip,(Join-Path $root $relative),"UE4SSLuaEventBridge/$relative")|Out-Null
+        [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip,(Join-Path $root $relative),"_UE4SSLuaEventBridge/$relative")|Out-Null
     }
 } finally {$zip.Dispose()}
 & (Join-Path $PSScriptRoot 'test-release-archive.ps1') -Archive $archive

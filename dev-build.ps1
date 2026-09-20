@@ -17,7 +17,7 @@ try {
     if (-not $SkipTests) {
         # The native tests use assert(), so keep assertions enabled with Debug.
         Invoke-Checked cmake @('-S', '.', '-B', 'build/tests', '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Debug', '-DUE4SSLEB_BUILD_TESTS=ON')
-        Invoke-Checked cmake @('--build', 'build/tests', '--target', 'SessionAliasIndexTests', 'BindingSnapshotTests', 'WeakObjectPtrTests', 'QueueBuffersTests', 'QueueDispatchScheduleTests', 'DispatchBudgetTests', 'NativeBackendLifecycleTests')
+        Invoke-Checked cmake @('--build', 'build/tests', '--target', 'SessionAliasIndexTests', 'BindingSnapshotTests', 'WeakObjectPtrTests', 'QueueBuffersTests', 'QueueDispatchScheduleTests', 'DispatchBudgetTests', 'NativeBackendLifecycleTests', 'LegacyInstallMigrationTests')
         Invoke-Checked ctest @('--test-dir', 'build/tests', '--output-on-failure')
         $lua = Join-Path $repo 'build/tools/lua-5.4.8/src/lua.exe'
         if (-not (Test-Path $lua)) {

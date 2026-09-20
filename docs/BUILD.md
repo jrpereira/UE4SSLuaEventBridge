@@ -21,7 +21,7 @@ cmake --build build
 Expected output:
 
 ```text
-build\dist\UE4SSLuaEventBridge\dlls\main.dll
+build\dist\_UE4SSLuaEventBridge\dlls\main.dll
 ```
 
 Do not distribute a binary built from a different UE4SS experimental commit

@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $Archive).Path)
 try {
-    $allowed = @('UE4SSLuaEventBridge/enabled.txt', 'UE4SSLuaEventBridge/dlls/main.dll')
+    $allowed = @('_UE4SSLuaEventBridge/enabled.txt', '_UE4SSLuaEventBridge/dlls/main.dll')
     foreach ($entry in $zip.Entries) {
         $normalized = $entry.FullName.Replace('\', '/')
         if ($normalized -match '(?i)(^|/)tools/') { throw "Forbidden Tools directory: $($entry.FullName)" }

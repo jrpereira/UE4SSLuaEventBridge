@@ -35,7 +35,7 @@ def version(root):
 NATIVE_TEST_TARGETS = [
     'SessionAliasIndexTests', 'BindingSnapshotTests', 'WeakObjectPtrTests',
     'QueueBuffersTests', 'QueueDispatchScheduleTests', 'DispatchBudgetTests',
-    'NativeBackendLifecycleTests',
+    'NativeBackendLifecycleTests', 'LegacyInstallMigrationTests',
 ]
 LUA_TEST_SUITES = ['tests/LuaHelperTests.lua', 'tests/LifecycleIntegrationTests.lua']
 
@@ -76,11 +76,11 @@ def build(root, output, runner=subprocess.run, lua_executable=None):
         runner(command, check=True, cwd=root)
     if sources(root) != before:
         raise RuntimeError('Source changed during build; no candidate manifest produced')
-    staged = output/'dist/UE4SSLuaEventBridge'
+    staged = output/'dist/_UE4SSLuaEventBridge'
     files = {p:digest(staged/p) for p in ['dlls/main.dll','enabled.txt']}
     if any(value is None for value in files.values()):
         raise RuntimeError('Native build did not produce the complete Windows DLL payload')
-    manifest = {'module':'UE4SSLuaEventBridge','version':value,'files':files,
+    manifest = {'module':'_UE4SSLuaEventBridge','version':value,'files':files,
                 'native_provenance':{'source_files':before,'configuration':'Release',
                                      'experimental_component_layout':False,'tests_passed':True,
                                      'test_configuration':'Debug',
@@ -93,7 +93,7 @@ def build(root, output, runner=subprocess.run, lua_executable=None):
 
 def validate(manifest, root):
     provenance = manifest.get('native_provenance', {})
-    if manifest.get('module') != 'UE4SSLuaEventBridge' or set(manifest.get('files',{})) != {'dlls/main.dll','enabled.txt'}:
+    if manifest.get('module') != '_UE4SSLuaEventBridge' or set(manifest.get('files',{})) != {'dlls/main.dll','enabled.txt'}:
         raise ValueError('Unexpected native candidate payload')
     if provenance.get('configuration') != 'Release' or provenance.get('experimental_component_layout') is not False or provenance.get('tests_passed') is not True:
         raise ValueError('Candidate lacks a verified production build record; rebuild with native_candidate.py')
