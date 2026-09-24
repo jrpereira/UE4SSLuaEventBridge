@@ -21,6 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y lua5.4
+      - run: python3 -m unittest discover -s tests -p test_release_notes.py -v
       - run: bash tests/run-portable-tests.sh
       - run: bash tests/run-lua-tests.sh
       - run: bash tests/run-abi-syntax-test.sh
@@ -64,7 +65,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $notes = ".github/release-notes/$env:RELEASE_TAG.md"
+          $notes = Join-Path $env:RUNNER_TEMP "release-notes.md"
+          python tools/release_notes.py --tag $env:RELEASE_TAG --output $notes
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $refs = @(git ls-remote --tags origin "refs/tags/$env:RELEASE_TAG" "refs/tags/$env:RELEASE_TAG^{}")
           if ($LASTEXITCODE) { throw 'Cannot verify existing release tag' }
           & ./tools/test-release-tag.ps1 -RemoteRefs $refs -Tag $env:RELEASE_TAG -ExpectedCommit $env:RELEASE_TARGET_SHA
@@ -76,11 +79,7 @@ jobs:
               "--target", $env:RELEASE_TARGET_SHA,
               "--title", "UE4SSLuaEventBridge $env:RELEASE_TAG"
           )
-          if (Test-Path $notes) {
-              $arguments += @("--notes-file", $notes)
-          } else {
-              $arguments += "--generate-notes"
-          }
+          $arguments += @("--notes-file", $notes)
           if ($env:RELEASE_PRERELEASE -eq 'True') { $arguments += '--prerelease' }
           & gh @arguments
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

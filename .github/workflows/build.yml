@@ -19,6 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y lua5.4
+      - run: python3 -m unittest discover -s tests -p test_release_notes.py -v
       - run: bash tests/run-portable-tests.sh
       - run: bash tests/run-lua-tests.sh
       - run: bash tests/run-abi-syntax-test.sh

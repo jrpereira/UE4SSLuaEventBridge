@@ -1,6 +1,14 @@
-# Build requirements
+# Maintainer guide
 
-## Required inputs
+For Lua integration, see the [developer guide](DEVELOPERS.md).
+
+- [Build requirements](#build-requirements)
+- [Configure and build](#configure-and-build)
+- [Portable checks](#portable-checks)
+- [Native architecture](#native-architecture)
+- [Testing and validation limits](#testing-and-validation-limits)
+
+## Build requirements
 
 - Visual Studio 2022 with the Desktop C++ workload
 - CMake 3.22 or newer
@@ -24,32 +32,8 @@ Expected output:
 build\dist\_UE4SSLuaEventBridge\dlls\main.dll
 ```
 
-Do not distribute a binary built from a different UE4SS experimental commit
-without explicitly validating that its C++ ABI matches `97b7e501`.
-
-## Tagged releases
-
-Pushing a `release/vVERSION` branch from the intended release commit
-runs the full portable checks, verifies that the branch matches the version
-declared in `mod/include/UE4SSLuaEventBridge/Version.hpp`, and builds the Windows DLL with MSVC. After those
-steps pass, the workflow creates the matching `vVERSION` tag and a
-permanent GitHub release containing the installable ZIP and its SHA-256
-checksum.
-Prerelease suffixes such as `-rc.1` are supported and produce GitHub prereleases.
-Opening a PR runs validation through build.yml and never publishes its unmerged
-head. An explicit workflow dispatch on the matching release branch supports
-publishers whose ref APIs do not emit push events. Existing releases are not
-overwritten; concurrent runs for one ref are serialized.
-
-Add `.github/release-notes/vMAJOR.MINOR.PATCH.md` before tagging to supply a
-curated changelog. If that file is absent, GitHub-generated notes are used.
-
-```sh
-git switch main
-git pull --ff-only
-git switch -c release/v1.0.0
-git push origin release/v1.0.0
-```
+A different UE4SS revision requires ABI validation against `97b7e501`.
+“Close enough” is not an ABI guarantee.
 
 ## Portable checks
 
@@ -60,3 +44,239 @@ the Windows SDK:
 bash tests/run-portable-tests.sh
 bash tests/run-abi-syntax-test.sh
 ```
+
+## Native architecture
+
+### Purpose
+
+Translate native Enhanced Input action events into Lua callbacks without
+installing `ProcessEvent` hooks, UObject listeners, scans, or key-state polling. Enhanced
+Input remains responsible for trigger evaluation and value generation.
+Copied events are delivered through scheduled queue checks; see [dispatch limits and tuning](DEVELOPERS.md#dispatch-limits-and-tuning).
+
+The backend is game-agnostic. A caller supplies both the exact live
+`UEnhancedInputComponent` object path and the exact `UInputAction` object path.
+The bridge does not discover player controllers or infer gameplay/UI state.
+
+### Pinned compatibility boundary
+
+The native adapter targets:
+
+- UE4SS `3.0.1 Beta #0`, commit `97b7e501`
+- Unreal Engine 5.5
+- Windows x64 with the MSVC ABI
+
+The verified UE 5.5 layout constants are:
+
+| Type or field | Pinned value |
+|---|---:|
+| `UInputComponent` size | `0x140` |
+| `UEnhancedInputComponent` size | `0x178` |
+| action-event binding array offset | `0x140` |
+| `UObject::ClassPrivate` offset | `0x10` |
+| `FInputActionInstance` size | `0x60` |
+| `FEnhancedInputActionEventBinding` size | `0x20` |
+
+The required UE 5.5 virtual order after the virtual destructor is:
+
+1. `Execute`
+2. `Clone`
+3. `SetShouldFireWithEditorScriptGuard`
+4. `IsBoundToObject`
+5. `GetUObject`
+
+Declaration order is ABI-significant. Compile-time size checks cover the local
+weak pointer, binding base, action-event binding, instance view, unique-pointer
+return wrapper, and array view.
+
+### Native binding route
+
+`UEnhancedInputComponent::BindAction` is a template/non-reflected C++ API, so
+the bridge appends an owned polymorphic binding to the component's native
+action-event array. Before reading or mutating that array it verifies:
+
+- the component still resolves through its weak object reference;
+- the component's reflected size is exactly the pinned UE 5.5 size;
+- array size/capacity invariants;
+- a non-null, pointer-aligned allocation when capacity is non-zero; and
+- a bounded capacity before growth.
+
+A mismatch fails closed. All public operations that touch the component or
+action require Unreal's game thread.
+
+The pinned UE4SS build's imported `FWeakObjectPtr(UObject*)` construction path
+is deliberately not used. The bridge creates and resolves the equivalent
+index/serial pair locally using the verified object-array offsets.
+
+### Ownership and event delivery
+
+1. `OpenInputComponent` resolves the exact supplied component once and stores a
+   weak reference behind a session-owned target handle.
+2. `BindAction` resolves the exact supplied action, attaches the native binding,
+   and stores a shared subscription record.
+3. Native `Execute` copies the event value into a bridge-owned queue. It never
+   re-enters Lua.
+4. `on_update` drains the queue and invokes one dispatcher closure in the
+   owning Lua state.
+5. The dispatcher looks up the individual callback in Lua-owned tables.
+6. Unbind, target close, and unbind-all deactivate the subscription before
+   detaching its native binding on the game thread.
+7. Callback failure and off-thread Lua-stop deactivate immediately; the next
+   game-thread bridge operation detaches the inactive binding.
+
+Queued events retain the shared subscription record, but an inactive record is
+discarded before its Lua session is dereferenced. If Unreal has already
+destroyed a component, weak resolution fails and detach avoids dereferencing
+the stale native binding pointer.
+
+Native bindings and any engine-created clones share a dispatch state rather
+than retaining a raw backend pointer. The state rejects new events during
+shutdown and counts live polymorphic binding objects. If UE4SS unloads the C++
+mod off-thread while any such object remains under Unreal ownership, the DLL
+adds a process-lifetime module reference. This intentionally trades a bounded
+module residency for avoiding a dangling vtable after `FreeLibrary`.
+
+Debug trace records use a separate queue in the same shared dispatch state.
+Native stages capture their event sequence and thread information before the
+record is queued. `on_update` prints those records through the owning Lua
+session's existing dispatcher, independently of the developer callback.
+`OutputDebugString` receives the same line immediately as a debugger fallback.
+Trace queues stop accepting records during backend shutdown and are cleared
+before retained Lua session storage is released.
+
+### Deliberate exclusions
+
+- no player-controller or pawn discovery;
+- no UObject create/delete listener;
+- no `ProcessEvent` hook;
+- no background component scanning or polling;
+- no automatic rebinding after component replacement; and
+- no game-specific UI, pause, or gameplay-state filtering.
+
+The Lua caller owns target selection, rebinding, and unbinding policy.
+
+### Helper layer boundary
+
+`Helpers.OpenInput` is part of the bridge's embedded Lua API. It uses UE4SS object construction and ordinary reflected Enhanced
+Input calls to create transient mapping contexts, Input Actions, and Tap/Hold
+triggers. The ABI-pinned native backend remains responsible only for explicit
+component targets, native action-event bindings, queued event delivery, and
+safe detachment.
+
+Each helper binding uses a private mapping context. This keeps rollback and
+unbind ownership local to one handle and avoids editing an already-active
+shared context. Mapping activation occurs only after all required native
+subscriptions have attached. A debug-enabled binding adds phase observers that
+share the logical helper binding ID and are removed as part of the same
+lifecycle. Helper-created actions default to non-consuming input.
+
+## Testing and validation limits
+
+Run from the repository root with Lua 5.4:
+
+```sh
+bash tests/run-lua-tests.sh
+```
+
+Without Bash, run both files directly:
+
+```sh
+lua tests/LuaHelperTests.lua
+lua tests/LifecycleIntegrationTests.lua
+```
+
+The build and release workflows invoke the same runner. A failed assertion
+returns a nonzero exit code and fails the job.
+
+### What is exercised
+
+The lifecycle suite loads the production `mod/lua/bridge_api.lua` into isolated
+Lua environments. Each reload receives a fresh session ID and callback registry,
+while its simulated engine retains shared context, target and subscription
+registries. Assertions cover cleanup ownership, error propagation, callback
+routing and absence of accumulated resources.
+
+| Scenario | Regression checks |
+| --- | --- |
+| Off-thread helper shutdown | Rejects cleanup without reflected mutations; retains resources for a later game-thread retry. |
+| Repeated reloads | 100 fresh environments; all four debug observers removed; cleanup is idempotent; old queued callbacks never invoke user code. |
+| Mapping-context removal failures | Two consecutive failures are reported; retry ownership is retained; detached callbacks stay disabled; successful removal happens once. |
+| Partial native removal failure | Remaining subscription survives for retry; already-removed context is not removed twice. |
+| Component destruction | Helper teardown completes under the native dead-component unsubscribe contract; captured callbacks are ignored after teardown. |
+| Late callbacks | An event captured before closing a scope cannot invoke that scope or a subsequently opened scope. |
+| Subsystem destruction | Invalid subsystem is not called through during cleanup; subscriptions and targets are released. |
+| Native-stop helper failure | Failed cleanup throws and attempts a Lua log message; the native stop path reports the exception and still detaches native actions. |
+| Thrown scope cleanup errors | An unexpected exception from one scope does not abandon healthy scopes; the failed scope remains retryable while Lua is alive. |
+| Public UnbindAll retries | Context failure, partial subscription failure, and bulk failure preserve retry ownership; captured callbacks stay disabled; later Close/UnbindAll releases all resources. |
+| Multiple scopes | Failure in one scope does not prevent cleanup of other scopes; remaining work is retried. |
+
+### Native queue ownership coverage
+
+`QueueBuffersTests` additionally runs 100 lifecycle cycles with real producer,
+consumer and statistics-reader threads synchronized by barriers, without sleeps.
+It uses the production buffer transfer, dispatch backlog, count publisher and
+budgeted dispatcher. It checks producer refill during a retained batch, count
+visibility before callbacks, canceled-entry draining, shared ownership release,
+and clearing the producer queue at shutdown. These are native C++ queue tests;
+the payload is not a UObject and this does not establish engine GC safety.
+
+The Windows build and release jobs run the queue and backend suites with MSVC AddressSanitizer
+and assertions enabled. Locally, run `tests/NativeQueueSanitizerTests.ps1` from an
+x64 Visual Studio developer shell. Sanitizer failures fail the job. AddressSanitizer
+checks memory access errors; it is not a data-race detector or an Unreal GC test.
+
+### Native backend lifecycle coverage
+
+On Windows, `NativeBackendLifecycleTests` compiles the production
+`EnhancedInputBackend.cpp` with controlled UE imports and object-array fixtures.
+It exercises actual native delegate allocation, attachment, execution, cloning,
+queueing, deactivation, detachment and backend shutdown:
+
+- 100 sessions bind, enqueue, unsubscribe and release retained native ownership.
+- Engine-owned clones reject late delivery after original removal and remain
+  safe to call and destroy after the backend has been destroyed.
+- A producer executes 10,000 delegate calls while a second thread shuts down
+  the backend; off-thread shutdown leaves engine-owned bindings untouched,
+  rejects subsequent events and requires module retention until destruction.
+- Destroying the component and its delegates before unsubscribe exercises the
+  real dead-component branch without dereferencing freed native bindings.
+- Failed native allocation publishes no binding and allows a subsequent retry.
+
+Windows CTest includes this suite. CI also runs it alongside the queue test
+under MSVC AddressSanitizer. The production native code runs against controlled stubs for UE object
+discovery, allocation, thread identity, and object-array lifetime. See
+[validation boundaries](#validation-boundary) for the integration limits.
+
+### Target delivery-fault coverage
+
+The native backend suite additionally verifies real bounded-queue rejection of a
+terminal event, invalidation of a retained old batch, notification without further
+input, rejection of new subscriptions on the faulted target, explicit new-target
+recovery, unaffected legacy/other-target behavior, and an injected C++ vector
+allocation exception. Closing a target or stopping its session suppresses its
+pending notification. The Lua suite exercises one-shot notification, a throwing
+fault handler, stale callback suppression, and a scheduled side effect rejected
+by native-health/generation guards before and after notification. These tests do
+not establish game-thread integration or physical focus/key-state semantics.
+
+### Validation boundary
+
+The Lua suites are **offline helper integration tests**, using simulated Unreal objects
+and native exports. They execute the real Lua implementation, but do not execute
+`BridgeMod::on_lua_stop`, native delegate detachment, engine garbage collection,
+or concurrent engine threads. Component destruction models the native contract;
+it does not establish that the pinned Unreal ABI implements it safely.
+
+The off-thread case invokes the helper cleanup entry point with the thread guard
+set to false. Native off-thread Lua shutdown currently skips that entry point and
+deactivates subscriptions without removing generated contexts. Game-thread stop now
+reports helper cleanup failures instead of discarding their return values, but
+reporting does not preserve those contexts for cleanup after the Lua state dies. Passing this suite
+does **not** resolve or certify that known lifecycle gap.
+
+Native acceptance still requires an isolated compatible UE/UE4SS process:
+stop Lua off-thread, reload it repeatedly, destroy/recreate the input component,
+and deliver queued or in-flight events during teardown. Verify mapping-context
+and delegate counts, absence of callbacks into stopped sessions, and absence of
+crashes using evidence from that process. Do not treat simulated cleanup or
+portable weak-pointer tests as proof of those runtime properties.

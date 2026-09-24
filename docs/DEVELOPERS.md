@@ -1,4 +1,14 @@
-# Developer API: primitives and helpers
+# Developer guide
+
+- [Requirements and execution model](#requirements-and-execution-model)
+- [Version and capabilities](#version-and-capabilities)
+- [Library primitives](#library-primitives)
+- [Target delivery faults](#opt-in-target-delivery-faults)
+- [Input helpers](#input-helpers)
+- [Complete Tap/Hold example](#complete-taphold-example)
+- [Ownership, errors, and lifecycle](#ownership-errors-and-lifecycle)
+- [Inspection and debugging](#inspection-and-debugging)
+- [Dispatch limits and tuning](#dispatch-limits-and-tuning)
 
 UE4SSLuaEventBridge exposes two API layers:
 
@@ -61,16 +71,19 @@ The current API reports:
     trigger_hold = true,
     detailed_errors = true,
     debug_tracing = true,
+    binding_snapshot = true,
+    target_delivery_faults = true,
     target_ue4ss_commit = "97b7e501",
 }
 ```
 
-Capabilities are authoritative. Consumers should not infer feature support
-from a version comparison.
+Gate optional features on `GetCapabilities()`. `GetVersion()` identifies the
+product release; `API_VERSION` identifies the API contract. A version number
+is useful metadata, but a poor crystal ball.
 
 ## Library primitives
 
-Every Lua mod receives an isolated `UE4SSLuaEventBridge` table. Target and
+Every Lua mod receives an isolated `UE4SSLuaEventBridge` table after its Lua state starts. Target and
 subscription handles belong to the Lua session that created them.
 
 ### `OpenInputComponent(componentPath)`
@@ -232,9 +245,8 @@ local Helpers = UE4SSLuaEventBridge.Helpers
 local Trigger = Helpers.Trigger
 ```
 
-The supported trigger constants are `Trigger.Tap` and `Trigger.Hold`. They are
-opaque, read-only values. Enhanced Input—not Lua—decides whether Tap or Hold
-fires.
+The supported trigger constants, `Trigger.Tap` and `Trigger.Hold`, are opaque
+and read-only. Unreal evaluates both triggers.
 
 ### `Helpers.OpenInput(options)`
 
@@ -328,7 +340,89 @@ The `action` field is the transient generated action path. It is an
 implementation detail and is not stable across sessions; use `key` and
 `trigger` instead.
 
-## Optional debug tracing
+### `input:Unbind(handle)`
+
+```lua
+local removed, err = input:Unbind(handle)
+```
+
+Removes the native subscription and its private mapping context, then releases
+the action and trigger references. A handle from another scope is rejected.
+Do not pass helper-owned handles to the primitive `Unbind`; doing so bypasses
+the helper's mapping-context ownership.
+
+### `input:Close()`
+
+```lua
+local closed, err = input:Close()
+```
+
+Closes all bindings owned by the scope, removes their private mapping
+contexts, and closes the component target. `Close` is idempotent. If a cleanup
+step fails, ownership is retained so a later game-thread call can retry it.
+`Bind` after a successful close returns `nil, "input scope is closed"`.
+
+Call `Close()` on the game thread before reload or shutdown. See
+[session cleanup](#session-cleanup-and-rebinding) for automatic cleanup limits.
+
+## Complete Tap/Hold example
+
+The [sample entry point](../examples/EnhancedInputTapHold/Scripts/main.lua)
+binds F10 to independent Tap and Hold actions, with failure rollback and explicit
+shutdown. Copy the [sample directory](../examples/EnhancedInputTapHold) to
+`Mods/EnhancedInputTapHold`, replace its two live object paths, and enable the
+sample and bridge.
+
+Set `DEBUG_BRIDGE = true` to trace action phases and delivery. Call
+`EnhancedInputTapHold_Shutdown()` from your reload or shutdown path while the
+Lua state is still alive.
+
+## Ownership, errors, and lifecycle
+
+Primitive return values are documented with each method. Helper option-contract
+violations raise Lua errors; operational failures return `nil, errorMessage` or
+`false, errorMessage`.
+
+Helper creation and binding are transactional. A failure removes any newly
+installed context. If removal fails, the scope retains a cleanup record for
+`Close()` to retry; earlier successful bindings remain active. Generated objects
+stay referenced while their contexts or bindings are owned by the scope.
+
+`UnbindAll()` disables callback delivery before attempting game-thread cleanup.
+If helper cleanup fails, native removal preserves targets for retry and clears
+obsolete subscription handles when removal succeeds. Retry `Close()` or
+`UnbindAll()` to finish cleanup. Failed attempts do not resume delivery.
+
+Deactivation rejects queued callbacks but cannot preempt a callback already
+executing. Consumers that schedule additional work must also check their own
+lifecycle state before that work runs. See [target delivery faults](#opt-in-target-delivery-faults)
+for optional native delivery-health checks.
+
+### Session cleanup and rebinding
+
+Close scopes explicitly on the game thread before stopping or reloading Lua.
+A game-thread Lua stop also attempts helper cleanup. An off-thread stop disables
+callbacks and defers native binding removal until the next game-thread bridge
+operation, but cannot remove helper mapping contexts after the Lua state dies.
+Cleanup is a lifecycle operation, not a farewell wish.
+
+Callback closures live in Lua-owned tables and are released on bind failure,
+unbind, target close, unbind-all, or callback failure. One dispatcher registry
+reference remains until the Lua state closes. Session and child-state alias
+lookup is synchronized; stopped session storage remains inert until bridge
+destruction so in-flight references cannot outlive it.
+
+If Unreal still owns a binding or clone when the bridge unloads, the DLL retains
+a process-lifetime module reference to keep its vtable callable. Explicitly
+removing owned bindings avoids this retention when no engine-owned clones remain.
+
+When the game replaces an input component, close the old target, resolve the new
+component path, and bind again. Discovery, gameplay gates, and rebinding remain
+the consumer's responsibility.
+
+## Inspection and debugging
+
+### Optional debug tracing
 
 Enable tracing on one helper scope when an Enhanced Input callback appears to
 be missing:
@@ -339,7 +433,7 @@ local input, err = Helpers.OpenInput({
     subsystem_path = ENHANCED_INPUT_SUBSYSTEM_PATH,
     mapping_priority = 10000,
     debug = true,
-    debug_label = "QuickslotsForever",
+    debug_label = "MyMod",
 })
 ```
 
@@ -352,7 +446,7 @@ produce a trace line every input-processing frame.
 Each trace is written through UE4SS's normal log output in this form:
 
 ```text
-[UE4SSLuaEventBridge][trace] label="QuickslotsForever" stage="event_queued" scope=1 binding=2 key="F10" trigger="Hold" phase="Triggered" event_seq=17 thread_id=1248 game_thread=true reason="-"
+[UE4SSLuaEventBridge][trace] label="MyMod" stage="event_queued" scope=1 binding=2 key="F10" trigger="Hold" phase="Triggered" event_seq=17 thread_id=1248 game_thread=true reason="-"
 ```
 
 Scope and binding IDs are monotonic and stable within one Lua session. Event
@@ -386,123 +480,123 @@ Tracing begins at the generated Enhanced Input action. It does not detect or
 report raw physical-key input, controller routing, gameplay state, or UI state.
 Those belong to the consuming mod or a separate diagnostic layer.
 
-### `input:Unbind(handle)`
+
+## Binding snapshot API
+
+Binding inspection is an additive API 4 capability, `binding_snapshot=true`.
+Check `GetCapabilities()` before calling it. Compatibility is pinned to
+UE4SS 97b7e501, Unreal 5.5 and Windows x64/MSVC; this API does not broaden it.
+
+### Invocation
 
 ```lua
-local removed, err = input:Unbind(handle)
-```
-
-Removes the native subscription and its private mapping context, then releases
-the action and trigger references. A handle from another scope is rejected.
-Do not pass helper-owned handles to the primitive `Unbind`; doing so bypasses
-the helper's mapping-context ownership.
-
-### `input:Close()`
-
-```lua
-local closed, err = input:Close()
-```
-
-Closes all bindings owned by the scope, removes their private mapping
-contexts, and closes the component target. `Close` is idempotent. If a cleanup
-step fails, ownership is retained so a later game-thread call can retry it.
-`Bind` after a successful close returns `nil, "input scope is closed"`.
-
-Call `Close` explicitly before a mod reload or shutdown. If UE4SS invokes the
-bridge's Lua-stop callback on the game thread, the bridge also attempts to
-close remaining helper scopes. On an off-thread Lua stop, it can safely
-deactivate native callbacks but cannot mutate Enhanced Input mapping contexts;
-explicit game-thread cleanup is therefore the reliable lifecycle contract.
-
-## Complete Tap/Hold example
-
-```lua
-local Helpers = UE4SSLuaEventBridge.Helpers
-local Trigger = Helpers.Trigger
-local input
-
-ExecuteInGameThread(function()
-    local err
-    input, err = Helpers.OpenInput({
-        component_path = COMPONENT_PATH,
-        subsystem_path = ENHANCED_INPUT_SUBSYSTEM_PATH,
-    })
-    if input == nil then error(err) end
-
-    local tapHandle
-    tapHandle, err = input:Bind("F10", Trigger.Tap, function()
-        print("F10 tapped\n")
-    end, { threshold_seconds = 0.2 })
-    if tapHandle == nil then error(err) end
-
-    local holdHandle
-    holdHandle, err = input:Bind("F10", Trigger.Hold, function(event)
-        print(string.format("F10 held for %.0f ms\n",
-            event.elapsed_processed * 1000))
-    end, { threshold_seconds = 0.5, one_shot = true })
-    if holdHandle == nil then error(err) end
-end)
-
-local function shutdown()
-    if input == nil then return end
-    local closed, err = input:Close()
-    if not closed then error(err) end
-    input = nil
+if UE4SSLuaEventBridge.GetCapabilities().binding_snapshot then
+    ExecuteInGameThread(function()
+        local text, err = input:InspectBindings()
+        print(text or ("binding snapshot failed: " .. tostring(err)))
+    end)
 end
-
-ExecuteInGameThread(shutdown)
 ```
 
-See `examples/EnhancedInputTapHold/Scripts/main.lua` for a complete sample mod
-with path placeholders, logging, failure rollback, and an explicit shutdown
-entry point.
+input is the caller's existing Helpers.OpenInput scope. Primitive equivalent: UE4SSLuaEventBridge.InspectInputComponent(targetHandle).
+Both return one multiline string on successful inspection, or nil,error for invalid target/session, stopped backend/session, off-thread call, closed scope or failure to produce the snapshot. Invalid component/array/binding states are data in a successful snapshot. No debug=true requirement. No automatic logging, cleanup/reaping, object creation, discovery, polling, rebinding or callback execution.
 
-## Failure and lifetime behavior
+### Schema 1
 
-Primitive argument and runtime failures return descriptive error values:
+Header: target; game_thread=1; component_valid; component_index/serial; array_readable; array_invariants; array_size/capacity; entries_readable.
+Per subscription: subscription; scope; binding (same IDs as debug traces); active; member; metadata_readable; expected_action_index/serial/valid; expected_trigger; expected_handle.
+When metadata is readable: action_index/serial; action_valid; action_matches; trigger; trigger_matches; handle; handle_matches.
+Footer: snapshot_end reported=N truncated=0/1. Numeric boolean fields are 0/1. action_valid is unknown on identity mismatch: an untrusted copied action index is never passed to object resolution.
+Trigger enums: Triggered=1, Started=2, Ongoing=4, Canceled=8, Completed=16. No event_seq because this is not an input event.
+Maximum 256 owned subscription rows (roughly <128 KiB text); original native array capacity must be below 65536, with valid size/capacity/pointer alignment before bounded copying. Readable=false means downstream conclusions are unavailable; member=0 with entries_readable=0 does not establish absence. Likewise metadata fields are omitted if not readable. Row order is unspecified.
 
-- value-producing primitives return `nil, errorMessage`;
-- boolean teardown primitives return `false, errorMessage`; and
-- `UnbindAll` returns `count, false, errorMessage` when incomplete.
+### Safety and limits
 
-Helper option-contract violations raise Lua errors. Operational helper
-failures return `nil, errorMessage` or `false, errorMessage`.
+Uses the pinned object-array resolver for bridge-recorded weak references. Copies object-item fields, native array and metadata with ReadProcessMemory, validating full read length. Never dereferences array entries; only reads metadata at addresses recorded during original attachment after pointer membership is established. Does not invoke virtual methods on diagnostic binding pointers. Expected action identity and native handle are captured at original attachment.
+The component class/layout was verified at OpenInput/bind; diagnostic reads only the existing ABI-pinned array offset after resolving the recorded weak reference. This is not a compatibility detector for other engine versions.
+Original pointer membership and matching metadata do not prove engine input-stack participation, action evaluation, or delegate invocation. Engine-created clones are not individually tracked by this diagnostic. Arbitrary native memory corruption and allocator address reuse cannot be comprehensively certified by a snapshot. Snapshot observes stored subscriptions with original live-binding records; it does not enumerate foreign bindings.
 
-Helper creation and binding are transactional. A failure removes any context
-already installed. If reflected removal itself fails, the scope retains an
-orphan cleanup record so `Close()` can retry. Earlier successful bindings in
-the scope remain active.
+### Interpreting a snapshot
 
-The following invariants apply:
+Capture on demand in the game thread and retain the complete header, rows and
+footer together. Check component weak identity and array readability before
+interpreting membership or action/trigger/handle matches. A truncated snapshot
+does not describe all subscriptions. Debug observers can add subscriptions beyond
+the bindings a caller explicitly requested.
 
-- no Lua callback runs after its native subscription is deactivated;
-- Unreal binding arrays are never mutated off the game thread;
-- generated objects remain referenced while their contexts or bindings are
-  owned by the scope;
-- one scope never removes another scope's mapping context;
-- callbacks receive copied values outside Unreal's input-dispatch stack;
-- session and child-state alias lookup is synchronized across UE4SS and game
-  threads, with stopped session storage retained until bridge destruction; and
-- the DLL is conservatively retained if Unreal may still own a native binding
-  vtable during bridge unload.
+An intact snapshot establishes stored binding state only. Investigating missing
+input also requires independent evidence of action evaluation and input routing;
+absence of a bridge callback alone does not identify where an event was lost.
+The native fixture tests cover bounds, identity and read gates, and Lua fixtures
+cover API forwarding and failure handling. They do not certify a live Unreal
+object layout or replace integration testing for the target build.
 
-The helpers do not add controller discovery, UObject listeners,
-`ProcessEvent` hooks, scanning, polling, automatic rebinding, gameplay-state
-filtering, or game-specific behavior.
+## Dispatch limits and tuning
 
-### Native candidate validation
+Configure these process environment variables before starting the game. Values
+are read once at bridge construction; changes require a restart. Invalid or
+out-of-range values use the defaults.
 
-`python tools/native_candidate.py --working . --output build/candidate-unique`
-requires a fresh output directory and Lua 5.4 (`--lua PATH` overrides discovery).
-It builds the production DLL in Release mode, builds the seven Windows native test targets
-separately in Debug mode so assertions execute, and runs both Lua suites from the
-repository root. A failed test or missing test suite prevents certification.
-Candidate manifests record this test configuration and suite list. Older manifests
-without that evidence must be regenerated; they are not accepted as tested builds.
+| Variable | Default | Accepted integers | Zero means |
+|---|---:|---|---|
+| `UE4SSLEB_QUEUE_CHECKS_PER_SECOND` | 20 | 1–1,000 | Invalid; uses default |
+| `UE4SSLEB_MAX_EVENTS_PER_PASS` | 256 | 0–1,000,000 | No callback-count limit |
+| `UE4SSLEB_MAX_DISPATCH_US` | 2,000 | 0–1,000,000 | No time limit |
+| `UE4SSLEB_MAX_QUEUED_EVENTS` | 65,536 | 0–1,000,000 | Unbounded producer queue |
 
-`UnbindAll()` disables callback delivery before attempting game-thread cleanup.
-If helper cleanup fails, bulk native removal preserves targets for retry and
-successful native removal clears the helper's obsolete subscription handles.
-Retry `Close()` or `UnbindAll()` to finish removing the retained contexts and
-targets. Failed attempts do not resume callback delivery. This does not change
-the unresolved off-thread Lua-stop context-cleanup limitation.
+For a PowerShell launcher:
+
+```powershell
+$env:UE4SSLEB_QUEUE_CHECKS_PER_SECOND = '40'
+# Start the game from this process so it inherits the variable.
+```
+
+An already-running Steam process may not inherit a newly set launcher variable.
+
+UE4SS still invokes on_update at its own cadence. Each invocation reads a monotonic
+clock and returns before touching either queue when the next pass is not due.
+The bridge creates no timer thread, sleeps, or catch-up bursts.
+
+Each eligible pass continues the oldest batch in order, subject to existing
+inactive-session/subscription and callback-error handling. The default allowance
+is 256 live callback attempts or 2,000 microseconds per pass. Canceled bindings
+and stopped sessions consume time but do not consume the callback-count allowance.
+A failed callback attempt still counts. The first-progress allowance applies to
+one examined entry, so an all-canceled batch cannot bypass the time limit. Remaining events stay in the batch
+for the next eligible pass; new batches never overtake them. There is no sleep
+between events. The time allowance starts before batch acquisition and buffer
+recycling. Dequeue tracing is performed only for each admitted event, inside the
+same budget; acquiring a batch does not format traces for the entire batch.
+The allowance is non-preemptive: preparation, lock waits, or one slow Lua callback
+can exceed it. At least one event is processed per nonempty pass to avoid starvation.
+
+Disabling both per-pass limits drains the available batch without a dispatch
+budget. A full producer queue rejects newest events, preserves accepted-event
+order, and logs the overflow even with tracing disabled. Treat rejection as an
+input-delivery failure. A larger queue stores more backlog; it does not make a
+slow callback faster.
+
+`UE4SSLuaEventBridge.GetDispatchStats()` returns process-wide `queued` (producer
+queue plus the retained consumer batch, excluding the event currently being
+processed), `queue_high_water` (producer queue only), `rejected_events` and
+`rejected_traces` counters. Canceled entries remain queued until discarded.
+The producer limit and high-water mark still describe producer capacity; total
+`queued` can exceed both while a previous batch is retained.
+Counters last for the bridge lifetime. Read them on demand; no diagnostic polling
+is added by the bridge. A rejection must be treated as an input delivery failure.
+
+Trace buffering is capped at 1,024 lines. Each pass separately allows 32 lines or
+250 microseconds of Lua logging work, while preserving buffered line order.
+Excess diagnostics increment `rejected_traces`. Native debugger tracing remains
+synchronous when enabled; keep debug tracing off for gameplay measurements.
+
+The 50 ms interval is between pass starts, not a sleep after completion. Actual
+delivery can take longer because of UE4SS scheduling and slow callbacks. A slow
+pass does not trigger repeated catch-up passes. Sustained overload can still
+increase event latency or cause explicit rejections. Fewer checks do not by themselves prove lower frame times. Test the new limits under the intended workload before deployment.
+
+See the [maintainer guide](BUILD.md#testing-and-validation-limits) for validation boundaries.
+
+For inputs that must stop after delivery loss, use
+[target delivery faults](#opt-in-target-delivery-faults). Those notifications
+are independent of the bounded event and trace queues.
