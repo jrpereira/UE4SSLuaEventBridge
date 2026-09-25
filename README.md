@@ -1,133 +1,26 @@
 # UE4SS Lua Event Bridge
 
-`UE4SSLuaEventBridge` is a native UE4SS C++ mod that exposes native Unreal
-Enhanced Input action events to Lua through a small, explicit-target API.
+UE4SSLuaEventBridge connects Unreal Enhanced Input to UE4SS Lua callbacks.
+Bind existing Input Actions or create key bindings with native Tap/Hold triggers.
+Unreal handles the stopwatch; your mod handles the action.
 
-The current build targets UE4SS `3.0.1 Beta #0` at commit `97b7e501` and Unreal
-Engine 5.5 on Windows x64. The C++ and Unreal layouts are ABI-pinned; a build
-for a nearby UE4SS or engine revision is not assumed compatible.
+## Features
 
-The product version is defined in
-[`Version.hpp`](mod/include/UE4SSLuaEventBridge/Version.hpp) and returned by
-`GetVersion()`. API compatibility is reported separately by `API_VERSION`.
+- Bind existing Input Actions or create private key bindings through Lua helpers.
+- Receive copied event values outside Unreal's native input-dispatch stack.
+- Use session-owned handles, explicit cleanup, and optional delivery-fault handlers.
+- Inspect bindings and dispatch statistics on demand; enable tracing when needed.
+- Tune bounded dispatch queues and per-pass budgets for your workload.
 
-## Why?
+Supply exact live component and subsystem paths. Your mod owns target discovery
+and rebinding when the game replaces those objects.
 
-UE4SS gives Lua access to reflected Unreal functions, but binding a Lua callback
-directly to an Enhanced Input action needs a native connection. Enhanced Input's
-`BindAction` APIs are C++ binding helpers, not reflected functions that Lua can
-simply call. UE4SS's `RegisterHook` observes existing `UFunction` calls and does
-not support delegate functions; it does not create an Enhanced Input subscription.
-See the [UE4SS hook documentation](https://docs.ue4ss.com/dev/lua-api/global-functions/registerhook.html)
-and [Unreal binding API](https://dev.epicgames.com/documentation/unreal-engine/API/Plugins/EnhancedInput/UEnhancedInputComponent/BindAction).
+## Compatibility
 
-A mod can hook a suitable game-provided action handler if one exists, or track
-key states and timing itself. The first approach depends on the game's exposed
-functions; the second means implementing behaviors such as Tap and Hold in Lua.
-
-UE4SSLuaEventBridge supplies that native connection: Unreal evaluates the input
-action and its triggers, and the bridge queues the resulting event for delivery
-to your Lua callback.
-
-### Advantages
-
-- **Native input behaviors.** Let Enhanced Input recognize Tap, Hold, and other
-  configured triggers instead of recreating timing and key-state logic in Lua.
-- **Less polling code.** Lua receives callbacks for bound input events rather
-  than repeatedly checking every key. The bridge still checks its dispatch queue
-  at a configurable frequency.
-- **Simpler mods.** Input recognition stays in the engine; Lua focuses on what
-  the mod should do when an action occurs. This reduces custom state tracking
-  and maintenance.
-- **Less dependence on Lua polling timing.** The engine recognizes input
-  transitions before delivering callbacks to Lua. Recognition therefore does not
-  depend on a Lua poll catching both the pressed and released states.
-- **Configurable responsiveness.** Mods can adjust dispatch frequency to balance
-  callback latency against queue-checking work.
-- **Control over dispatch work.** Configurable queue limits and per-pass budgets
-  let you balance callback latency against processing work while using native
-  Enhanced Input behaviors.
-
-## Helper API
-
-The helper layer creates private transient Input Actions, triggers, and mapping
-contexts. The caller still supplies exact live component and subsystem paths.
-
-```lua
-local Helpers = UE4SSLuaEventBridge.Helpers
-local Trigger = Helpers.Trigger
-
-local input, openError = Helpers.OpenInput({
-    component_path = componentPath,
-    subsystem_path = enhancedInputSubsystemPath,
-    debug = false, -- Set true for end-to-end Enhanced Input trace lines.
-    debug_label = "MyMod",
-})
-
-local tapHandle, tapError = input:Bind("F10", Trigger.Tap, function()
-    print("F10 tapped\n")
-end)
-
-local holdHandle, holdError = input:Bind("F10", Trigger.Hold, function(event)
-    print(string.format("F10 held for %.0f ms\n",
-        event.elapsed_processed * 1000))
-end, { threshold_seconds = 0.5, one_shot = true })
-
-input:Unbind(tapHandle)
-input:Close()
-```
-
-Tap/Hold classification and elapsed time come from Unreal Enhanced Input; the
-helper does not implement Lua timers or a key-state machine.
-
-## Primitive API
-
-```lua
-local target, openError =
-    UE4SSLuaEventBridge.OpenInputComponent(componentPath)
-
-local handle, bindError = UE4SSLuaEventBridge.BindAction(
-    target,
-    actionPath,
-    "Triggered",
-    function(event)
-        print(event.action, event.phase, event.value.x)
-    end)
-
-UE4SSLuaEventBridge.Unbind(handle)
-UE4SSLuaEventBridge.CloseInputComponent(target)
-UE4SSLuaEventBridge.UnbindAll()
-```
-
-Primitive failures include a descriptive error return. `OpenInputComponent`
-and `BindAction` return `nil, error`; `Unbind` and `CloseInputComponent` return
-`false, error`; `UnbindAll` returns `count, completed, error`.
-
-The caller supplies exact live object paths and owns bind/unbind/rebind policy.
-The bridge performs no controller discovery, UObject listening, `ProcessEvent`
-hooking, background scans, key-state polling, or game-specific state filtering.
-Event and trace queues use scheduled dispatch: 20 passes/sec by default, with a
-configurable rate. See
-[`docs/QUEUE_DISPATCH_RATE.md`](docs/QUEUE_DISPATCH_RATE.md).
-
-## Safety model
-
-- Native binding-array access is restricted to the Unreal game thread.
-- Component and action lookup is exact-path only.
-- Component layout and array invariants are checked before mutation.
-- Weak object references use verified object index/serial semantics.
-- Native input execution only queues copied event data; it does not enter Lua.
-- Callback closures are released promptly on all public teardown paths and on
-  callback failure.
-- Off-thread Lua-stop deactivates callbacks without mutating Unreal arrays;
-  inactive bindings are reaped by the next game-thread bridge operation.
-- A process-lifetime DLL pin is used only if UE4SS unloads the bridge while
-  Unreal still owns a binding or clone, preventing a dangling native vtable.
-- Handles are isolated by Lua session, including calls made from UE4SS
-  `ExecuteInGameThread` child Lua states.
-- Session and child-state alias indexes are synchronized; stopped sessions
-  remain inert until bridge destruction so in-flight raw references cannot
-  outlive their storage.
+Windows x64, Unreal Engine 5.5, and UE4SS 3.0.1 Beta #0 at commit `97b7e501`.
+Native layouts are ABI-pinned; nearby engine or UE4SS builds are not assumed
+compatible. Check `GetCapabilities()` for API features rather than inferring
+them from the product version.
 
 ## Installation layout
 
@@ -137,37 +30,85 @@ Extract the ZIP into the UE4SS `Mods` directory to produce:
 
 ```text
 Mods/
-└── _UE4SSLuaEventBridge/
+└── _ModCore_UE4SSLuaEventBridge/
     ├── dlls/
-    │   └── main.dll
+    │   ├── main.dll
+    │   ├── main.json
+    │   └── versions/
+    │       └── UE4SSLuaEventBridge-1.0.7.dll
     └── enabled.txt
 ```
+
+`main.dll` is a small bootstrap. It reads `dlls/main.json`, validates the
+selected implementation's embedded product, version, private ABI, UE4SS commit,
+and Unreal target, then loads it from `dlls/versions`. A missing configuration
+or an explicit `"version": "auto"` selects the highest compatible discovered
+version. A malformed configuration or unavailable exact version fails closed.
+
+Both DLLs carry Windows version resources and can be inspected without loading
+them. Use the published SHA-256 checksum to verify the exact archive bytes.
 
 For deterministic startup before Lua mods that consume the bridge, add this as
 the first mod entry in `Mods/mods.txt`:
 
 ```text
-_UE4SSLuaEventBridge : 1
+_ModCore_UE4SSLuaEventBridge : 1
 ```
 
 The packaged `enabled.txt` marker also enables the bridge, but UE4SS loads marker
 enabled mods in a separate pass with no defined ordering. A `mods.txt` entry is
 therefore preferred when another mod needs the bridge during its Lua-state setup.
 
-On first boot from the underscored folder, the bridge retires a sibling legacy
+When upgrading, rename `_UE4SSLuaEventBridge` to
+`_ModCore_UE4SSLuaEventBridge` and update its existing `mods.txt` entry.
+Keep only one active bridge installation.
+
+On first boot from the ModCore folder, the bridge retires a sibling legacy
 `UE4SSLuaEventBridge` installation. When the old folder has no `deprecated.txt`,
 the bridge removes its `enabled.txt` marker and writes `deprecated.txt` containing
-`_UE4SSLuaEventBridge`.
+`_ModCore_UE4SSLuaEventBridge`.
+
+## Minimal Lua example
+
+Replace the component and subsystem placeholders with exact live object paths.
+Run setup and cleanup on the Unreal game thread:
+
+```lua
+local input
+ExecuteInGameThread(function()
+    local bridge = UE4SSLuaEventBridge
+    input = assert(bridge.Helpers.OpenInput({
+        component_path = COMPONENT_PATH,
+        subsystem_path = ENHANCED_INPUT_SUBSYSTEM_PATH,
+    }))
+    local handle, err = input:Bind("F10", bridge.Helpers.Trigger.Tap, function()
+        print("F10 tapped\n")
+    end)
+    if not handle then
+        local closed, closeError = input:Close()
+        error(tostring(err) .. (closed and "" or ("; cleanup: " .. tostring(closeError))))
+    end
+end)
+
+-- Call from your mod's shutdown/reload path while its Lua state is still alive.
+function ShutdownBridgeInput()
+    ExecuteInGameThread(function()
+        if input then
+            local closed, err = input:Close()
+            if not closed then error(err) end
+            input = nil
+        end
+    end)
+end
+```
+
+Off-thread Lua shutdown disables callbacks but can leave helper-generated mapping
+contexts installed. Explicit game-thread cleanup remains required. Offline tests
+do not establish live-game acceptance or performance.
 
 ## Documentation
 
-- [`docs/LUA_API.md`](docs/LUA_API.md) — public Lua contract
-- [`docs/DEVELOPER_API.md`](docs/DEVELOPER_API.md) — low-level primitives and
-  `OpenInput` helper contract
-- [`docs/ENHANCED_INPUT_BACKEND.md`](docs/ENHANCED_INPUT_BACKEND.md) — ABI,
-  ownership, and lifetime model
-- [`docs/BUILD.md`](docs/BUILD.md) — ABI-pinned build requirements
-- [`docs/LIFECYCLE-TESTS.md`](docs/LIFECYCLE-TESTS.md) — lifecycle regression coverage and runtime validation limits
-- [`docs/BINDING_SNAPSHOT.md`](docs/BINDING_SNAPSHOT.md) — on-demand binding inspection
-- [`examples/EnhancedInputTapHold`](examples/EnhancedInputTapHold) — complete
-  game-agnostic F10 Tap/Hold sample mod
+- [Developer guide](docs/DEVELOPERS.md): API, examples, lifecycle, debugging, and tuning.
+- [Maintainer guide](docs/BUILD.md): native architecture, build instructions, and tests.
+- [Changelog](CHANGELOG.md): version history.
+- [Complete sample](examples/EnhancedInputTapHold/Scripts/main.lua): rollback and cleanup.

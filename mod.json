@@ -1,0 +1,11 @@
+{
+  "manifest_version": 1,
+  "id": "UE4SSLuaEventBridge",
+  "name": "UE4SS Lua Event Bridge",
+  "description": "Expose Unreal Enhanced Input events to UE4SS Lua mods through a native C++ bridge. Bind Lua callbacks to input actions and use engine-managed triggers, including Tap and Hold.",
+  "version_source": "contract/Version.hpp",
+  "links": {
+    "source": "https://github.com/jrpereira/UE4SSLuaEventBridge",
+    "nexus": "https://www.nexusmods.com/thebloodofdawnwalker/mods/526"
+  }
+}

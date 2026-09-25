@@ -1,7 +1,7 @@
-#include <UE4SSLuaEventBridge/DispatchBudget.hpp>
-#include <UE4SSLuaEventBridge/QueueCapacity.hpp>
-#include <UE4SSLuaEventBridge/DispatchBacklog.hpp>
-#include <UE4SSLuaEventBridge/QueueBuffers.hpp>
+#include <DispatchBudget.hpp>
+#include <QueueCapacity.hpp>
+#include <DispatchBacklog.hpp>
+#include <QueueBuffers.hpp>
 #include <cassert>
 #include <chrono>
 #include <deque>

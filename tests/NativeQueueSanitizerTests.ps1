@@ -9,7 +9,7 @@ try {
         $executable = Join-Path $OutputDirectory "$suite.exe"
         $object = Join-Path $OutputDirectory "$suite.obj"
         $symbols = Join-Path $OutputDirectory "$suite.pdb"
-        & cl /nologo /std:c++20 /EHsc /MD /Zi /fsanitize=address /W4 /WX /Imod/include "tests/$suite.cpp" "/Fe$executable" "/Fo$object" "/Fd$symbols"
+        & cl /nologo /std:c++20 /EHsc /MD /Zi /fsanitize=address /W4 /WX /Ibridge/include /Icontract "tests/$suite.cpp" "/Fe$executable" "/Fo$object" "/Fd$symbols"
         if ($LASTEXITCODE -ne 0) { throw "AddressSanitizer $suite build failed" }
         & (Resolve-Path -LiteralPath $executable).Path
         if ($LASTEXITCODE -ne 0) { throw "AddressSanitizer $suite failed" }

@@ -1,4 +1,4 @@
-#include <UE4SSLuaEventBridge/BindingSnapshot.hpp>
+#include <BindingSnapshot.hpp>
 #include <array>
 #include <cassert>
 using namespace UE4SSLuaEventBridge;

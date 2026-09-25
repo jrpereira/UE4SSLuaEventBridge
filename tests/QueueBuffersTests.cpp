@@ -1,6 +1,6 @@
-#include <UE4SSLuaEventBridge/QueueBuffers.hpp>
-#include <UE4SSLuaEventBridge/DispatchBacklog.hpp>
-#include <UE4SSLuaEventBridge/DispatchBudget.hpp>
+#include <QueueBuffers.hpp>
+#include <DispatchBacklog.hpp>
+#include <DispatchBudget.hpp>
 #include <barrier>
 #include <cassert>
 #include <memory>

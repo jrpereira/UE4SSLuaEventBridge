@@ -71,7 +71,32 @@ local function fixture()
         local function own(id) check(id == session.id, "cross-session native call") end
         env.UE4SSLuaEventBridge_GetVersion = function() return "test-fixture" end
         env.UE4SSLuaEventBridge_GetCapabilities = function()
-            return 4, true, true, true, true, true, true, true, true, "fixture", true
+            return 5, true, true, true, true, true, true, true, true, "fixture", true, true, true, true
+        end
+        env.UE4SSLuaEventBridge_RegisterLoopStart = function(id, token)
+            own(id)
+            session.loopToken = token
+            return true
+        end
+        env.UE4SSLuaEventBridge_CancelLoopStart = function(id, token)
+            own(id)
+            if session.loopToken ~= token then return false end
+            session.loopToken = nil
+            return true
+        end
+        env.UE4SSLuaEventBridge_LifetimeCapture = function(id, address)
+            own(id)
+            return tostring(address + 1000)
+        end
+        env.UE4SSLuaEventBridge_LifetimeValid = function(id, address, token)
+            own(id)
+            return token == tostring(address + 1000)
+        end
+        env.UE4SSLuaEventBridge_LifetimeTakeLost = function(id)
+            own(id)
+            local token = session.lostToken
+            session.lostToken = nil
+            return token
         end
         env.UE4SSLuaEventBridge_IsInGameThread = function() return self.gameThread end
         env.UE4SSLuaEventBridge_TraceScope = function() end
@@ -127,7 +152,7 @@ local function fixture()
         end
         env.UE4SSLuaEventBridge_UnbindAll = function(id) return bulkUnbind(id, false) end
         env.UE4SSLuaEventBridge_UnbindAllPreserveTargets = function(id) return bulkUnbind(id, true) end
-        session.dispatch = check(loadfile("mod/lua/bridge_api.lua", "t", env))()
+        session.dispatch = check(loadfile("bridge/lua/bridge_api.lua", "t", env))()
         session.api = env.UE4SSLuaEventBridge
         session.cleanup = env.__UE4SSLuaEventBridge_CloseHelperScopes
         session.stop = env.__UE4SSLuaEventBridge_StopHelperScopes
@@ -155,6 +180,38 @@ local function fixture()
 end
 
 local cases = {}
+cases["loop start is one-shot and cancellation releases callbacks"] = function()
+    local f, calls = fixture(), 0
+    local s = f:loadSession()
+    local unsubscribe = s.api.onLoopStart(function() calls = calls + 1 end)
+    local token = check(s.loopToken)
+    s.dispatch(-2, token)
+    s.dispatch(-2, token)
+    check(calls == 1 and not unsubscribe(), "delivered loop callback remained active")
+    local cancel = s.api.onLoopStart(function() calls = calls + 10 end)
+    local canceled = check(s.loopToken)
+    check(cancel(), "pending loop callback was not canceled")
+    s.dispatch(-2, canceled)
+    check(calls == 1, "canceled loop callback ran")
+end
+
+cases["lifetime wrapper preserves decimal tokens and drains losses"] = function()
+    local f = fixture()
+    local s = f:loadSession()
+    local token = check(s.api.lifetimes.captureAddress(4096))
+    local object = {
+        IsValid = function() return true end,
+        GetAddress = function() return 4096 end,
+    }
+    check(s.api.lifetimes.captureObject(object) == token)
+    local missing, why = s.api.lifetimes.captureObject({IsValid = function() return false end})
+    check(missing == nil and why:find("live UE4SS UObject wrapper", 1, true))
+    check(token == "5096" and s.api.lifetimes.valid(4096, token))
+    check(not s.api.lifetimes.valid(4096, "05096"), "noncanonical token accepted")
+    s.lostToken = token
+    check(s.api.lifetimes.takeLost() == token and s.api.lifetimes.takeLost() == nil)
+end
+
 cases["off-thread helper shutdown refuses mutation and permits retry"] = function()
     local f = fixture()
     local s = f:loadSession()

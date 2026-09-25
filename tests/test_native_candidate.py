@@ -12,8 +12,10 @@ from release_session import inspect_candidate
 
 class NativeCandidateTests(unittest.TestCase):
     def fixture(self, root):
-        (root/'mod/include/UE4SSLuaEventBridge').mkdir(parents=True)
-        (root/'mod/include/UE4SSLuaEventBridge/Version.hpp').write_text('#define UE4SSLEB_VERSION "1.2.3"')
+        (root/'contract').mkdir(parents=True)
+        (root/'contract/Version.hpp').write_text('#define UE4SSLEB_VERSION "1.2.3"')
+        for directory in ['bootstrap', 'bridge', 'packaging', 'tests']:
+            (root/directory).mkdir()
         (root/'CMakeLists.txt').write_text('fixture')
         lua = root/'build/tools/lua-5.4.8/src/lua.exe'
         lua.parent.mkdir(parents=True)
@@ -23,9 +25,11 @@ class NativeCandidateTests(unittest.TestCase):
     def runner(self, output):
         def run(command, **kwargs):
             if command[:3] == ['cmake','--build',str(output)]:
-                staged = output/'dist/_UE4SSLuaEventBridge'
-                (staged/'dlls').mkdir(parents=True)
+                staged = output/'dist/_ModCore_UE4SSLuaEventBridge'
+                (staged/'dlls/versions').mkdir(parents=True)
                 (staged/'dlls/main.dll').write_bytes(b'fixture dll')
+                (staged/'dlls/main.json').write_text('{"schema":1,"version":"1.2.3"}')
+                (staged/'dlls/versions/UE4SSLuaEventBridge-1.2.3.dll').write_bytes(b'fixture implementation')
                 (staged/'enabled.txt').write_bytes(b'')
         return run
 
@@ -39,13 +43,13 @@ class NativeCandidateTests(unittest.TestCase):
             (root/'tests/__pycache__').mkdir(parents=True)
             (root/'tests/__pycache__/cached.pyc').write_bytes(b'generated cache')
             self.assertEqual(native.validate(manifest,root), [])
-            staged = output/'dist/_UE4SSLuaEventBridge'
+            staged = output/'dist/_ModCore_UE4SSLuaEventBridge'
             result = inspect_candidate(manifest,staged,staged,root)
             self.assertFalse(result['needs_attention'])
-            (root/'mod/new.hpp').write_text('new header')
+            (root/'bridge/new.hpp').write_text('new header')
             result = inspect_candidate(manifest,staged,staged,root)
             self.assertTrue(result['needs_attention'])
-            self.assertEqual(result['working_differences'], ['mod/new.hpp'])
+            self.assertEqual(result['working_differences'], ['bridge/new.hpp'])
             self.assertFalse(result['staged_version_differs_from_working'])
             with self.assertRaises(ValueError):
                 native.build(root, output, self.runner(output))
@@ -101,7 +105,7 @@ class NativeCandidateTests(unittest.TestCase):
             def run(command, **kwargs):
                 self.runner(output)(command, **kwargs)
                 if command[0] == 'ctest':
-                    (root/'mod/edited.cpp').write_text('changed during build')
+                    (root/'bridge/edited.cpp').write_text('changed during build')
             with self.assertRaises(RuntimeError):
                 native.build(root,output,run)
             self.assertFalse((output/'candidate-manifest.json').exists())

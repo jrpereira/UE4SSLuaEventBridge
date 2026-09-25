@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 build_dir="$(mktemp -d)"
 trap 'rm -rf "${build_dir}"' EXIT
-generated_dir="${build_dir}/generated/UE4SSLuaEventBridge"
+generated_dir="${build_dir}/generated"
 mkdir -p "${generated_dir}"
 header="${generated_dir}/EmbeddedLuaAPI.hpp"
 printf '%s\n' \
@@ -16,12 +16,12 @@ printf '%s\n' \
     > "${header}"
 for offset in 0 7000; do
     printf '%s' 'R"UE4SSLEB_LUA(' >> "${header}"
-    dd if="${repo_root}/mod/lua/bridge_api.lua" bs=1 skip="${offset}" count=7000 \
+    dd if="${repo_root}/bridge/lua/bridge_api.lua" bs=1 skip="${offset}" count=7000 \
         status=none >> "${header}"
     printf '%s\n' ')UE4SSLEB_LUA",' >> "${header}"
 done
 printf '%s' 'R"UE4SSLEB_LUA(' >> "${header}"
-dd if="${repo_root}/mod/lua/bridge_api.lua" bs=1 skip=14000 \
+dd if="${repo_root}/bridge/lua/bridge_api.lua" bs=1 skip=14000 \
     status=none >> "${header}"
 printf '%s\n' ')UE4SSLEB_LUA",' >> "${header}"
 printf '%s\n' '};' '}' >> "${header}"
@@ -31,11 +31,12 @@ g++ \
     -D_WIN32 \
     '-D__declspec(x)=' \
     -I"${build_dir}/generated" \
-    -I"${repo_root}/mod/include" \
+    -I"${repo_root}/bridge/include" \
+    -I"${repo_root}/contract" \
     -Wall \
     -Wextra \
     -Wpedantic \
     -Werror \
     -fsyntax-only \
-    "${repo_root}/mod/src/BridgeMod.cpp" \
-    "${repo_root}/mod/src/EnhancedInputBackend.cpp"
+    "${repo_root}/bridge/src/BridgeMod.cpp" \
+    "${repo_root}/bridge/src/EnhancedInputBackend.cpp"

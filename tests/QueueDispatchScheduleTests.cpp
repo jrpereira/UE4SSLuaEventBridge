@@ -1,4 +1,4 @@
-#include <UE4SSLuaEventBridge/QueueDispatchSchedule.hpp>
+#include <QueueDispatchSchedule.hpp>
 #include <cassert>
 #include <chrono>
 using namespace UE4SSLuaEventBridge;
