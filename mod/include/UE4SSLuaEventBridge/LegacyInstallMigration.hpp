@@ -7,9 +7,9 @@
 
 namespace UE4SSLuaEventBridge
 {
-inline constexpr std::wstring_view current_mod_folder = L"_UE4SSLuaEventBridge";
+inline constexpr std::wstring_view current_mod_folder = L"_ModCore_UE4SSLuaEventBridge";
 inline constexpr std::wstring_view legacy_mod_folder = L"UE4SSLuaEventBridge";
-inline constexpr std::string_view legacy_deprecation_target = "_UE4SSLuaEventBridge";
+inline constexpr std::string_view legacy_deprecation_target = "_ModCore_UE4SSLuaEventBridge";
 
 enum class LegacyInstallMigrationResult
 {

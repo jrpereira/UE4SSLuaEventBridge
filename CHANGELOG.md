@@ -12,6 +12,10 @@
   create/delete invalidation, bounded loss queues, and fail-closed overflow.
 - Gate UObject lifetime support behind a one-time runtime layout probe; failed
   address/index/slot/serial validation disables the capability and listeners.
+- Embed verifiable Windows file and product version metadata in the DLL and
+  reject packaging when it differs from the source release version.
+- Rename the packaged mod folder to `_ModCore_UE4SSLuaEventBridge`; existing
+  `_UE4SSLuaEventBridge` installs must rename the folder and `mods.txt` entry.
 
 API compatibility is version 5. The lifecycle APIs are additive and advertised
 through `GetCapabilities()`.

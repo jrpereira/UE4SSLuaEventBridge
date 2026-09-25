@@ -43,12 +43,15 @@ jobs:
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DUE4SSLEB_BUILD_TESTS=OFF
       - name: Build
         run: cmake --build build --config Release
+      - name: Verify DLL version resource
+        shell: pwsh
+        run: ./tools/test-dll-version.ps1 -Dll build/dist/_ModCore_UE4SSLuaEventBridge/dlls/main.dll
       - name: Package
         id: metadata
         shell: pwsh
         run: |
           $metadata = & ./tools/release-metadata.ps1 -OutputFile $env:GITHUB_OUTPUT
-          & ./tools/package-release.ps1 -Distribution build/dist/_UE4SSLuaEventBridge -OutputDirectory . -SourceCommit $env:GITHUB_SHA
+          & ./tools/package-release.ps1 -Distribution build/dist/_ModCore_UE4SSLuaEventBridge -OutputDirectory . -SourceCommit $env:GITHUB_SHA
       - uses: actions/upload-artifact@v4
         with:
           name: UE4SSLuaEventBridge-${{ steps.metadata.outputs.tag }}

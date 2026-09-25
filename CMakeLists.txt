@@ -31,6 +31,13 @@ if(WIN32)
     if(NOT MSVC)
         message(FATAL_ERROR "The ABI-pinned UE4SS target must be built with MSVC.")
     endif()
+    enable_language(RC)
+    set(UE4SSLEB_VERSION_RESOURCE "${CMAKE_CURRENT_BINARY_DIR}/generated/Version.rc")
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/Version.rc.in"
+        "${UE4SSLEB_VERSION_RESOURCE}"
+        @ONLY
+    )
     find_program(MSVC_LIB_EXE lib.exe REQUIRED)
     set(UE4SS_IMPORT_LIB "${CMAKE_CURRENT_BINARY_DIR}/UE4SS-97b7e501.lib")
     add_custom_command(
@@ -47,6 +54,7 @@ if(WIN32)
         mod/src/BridgeMod.cpp
         mod/src/EnhancedInputBackend.cpp
         "${UE4SSLEB_GENERATED_LUA_API}"
+        "${UE4SSLEB_VERSION_RESOURCE}"
     )
     add_dependencies(UE4SSLuaEventBridge UE4SSImportLibrary)
     target_compile_features(UE4SSLuaEventBridge PRIVATE cxx_std_20)
@@ -63,12 +71,12 @@ if(WIN32)
     set_target_properties(UE4SSLuaEventBridge PROPERTIES
         OUTPUT_NAME main
         PREFIX ""
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/dist/_UE4SSLuaEventBridge/dlls"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/dist/_ModCore_UE4SSLuaEventBridge/dlls"
     )
     add_custom_command(TARGET UE4SSLuaEventBridge POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/mod/enabled.txt"
-            "${CMAKE_BINARY_DIR}/dist/_UE4SSLuaEventBridge/enabled.txt"
+            "${CMAKE_BINARY_DIR}/dist/_ModCore_UE4SSLuaEventBridge/enabled.txt"
     )
 endif()
 

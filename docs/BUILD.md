@@ -29,8 +29,20 @@ cmake --build build
 Expected output:
 
 ```text
-build\dist\_UE4SSLuaEventBridge\dlls\main.dll
+build\dist\_ModCore_UE4SSLuaEventBridge\dlls\main.dll
 ```
+
+The build embeds the product version as a Windows `VERSIONINFO` resource. It
+can be checked without loading the DLL:
+
+```powershell
+./tools/test-dll-version.ps1 -Dll build/dist/_ModCore_UE4SSLuaEventBridge/dlls/main.dll
+```
+
+The validator requires the numeric file version `MAJOR.MINOR.PATCH.0`, the
+three-part product version from `Version.hpp`, the product name, and the
+original filename to agree. Packaging runs the same check before hashing the
+DLL and creating the archive.
 
 A different UE4SS revision requires ABI validation against `97b7e501`.
 “Close enough” is not an ABI guarantee.

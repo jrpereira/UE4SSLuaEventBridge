@@ -9,8 +9,9 @@ try {
     [IO.File]::WriteAllBytes((Join-Path $distribution 'dlls/main.dll'),[byte[]](1,2,3,4))
     'must not ship'|Set-Content (Join-Path $distribution 'personal-config.json')
     $packager=Join-Path $repo 'tools/package-release.ps1'
-    $result=& $packager -Distribution $distribution -OutputDirectory (Join-Path $fixture 'out') -SourceCommit ('a'*40)
+    $result=& $packager -Distribution $distribution -OutputDirectory (Join-Path $fixture 'out') -SourceCommit ('a'*40) -AllowNonPeTestFixture
     $manifest=Get-Content -LiteralPath $result.manifest -Raw|ConvertFrom-Json
+    if($manifest.api -ne 5){throw 'Package API version mismatch'}
     $zip=[IO.Compression.ZipFile]::OpenRead($result.archive)
     try {
         if($zip.Entries.Count -ne 2){throw 'Unexpected payload count'}
@@ -19,21 +20,21 @@ try {
             if(-not $entry){throw "Manifest entry missing: $($file.path)"}
             $stream=$entry.Open()
             $hasher=[Security.Cryptography.SHA256]::Create()
-            try {$hash=[Convert]::ToHexString($hasher.ComputeHash($stream)).ToLowerInvariant()}
+            try {$hash=[BitConverter]::ToString($hasher.ComputeHash($stream)).Replace('-','').ToLowerInvariant()}
             finally {$hasher.Dispose();$stream.Dispose()}
             if($hash -ne $file.sha256){throw 'Manifest hash mismatch'}
         }
-        if($zip.GetEntry('_UE4SSLuaEventBridge/personal-config.json')){throw 'Personal configuration shipped'}
+        if($zip.GetEntry('_ModCore_UE4SSLuaEventBridge/personal-config.json')){throw 'Personal configuration shipped'}
     } finally {$zip.Dispose()}
     $rejected=$false
-    try { & $packager -Distribution $distribution -OutputDirectory (Join-Path $fixture 'out') -SourceCommit ('a'*40)|Out-Null }
+    try { & $packager -Distribution $distribution -OutputDirectory (Join-Path $fixture 'out') -SourceCommit ('a'*40) -AllowNonPeTestFixture|Out-Null }
     catch {$rejected=$true}
     if(-not $rejected){throw 'Existing artifact overwritten'}
     if(-not (Get-Content -LiteralPath $result.checksum -Raw).StartsWith((Get-FileHash $result.archive -Algorithm SHA256).Hash.ToLowerInvariant())){throw 'Archive checksum mismatch'}
 
     $validator=Join-Path $repo 'tools/test-release-archive.ps1'
     & $validator -Archive $result.archive
-    foreach($forbidden in @('Tools/a.txt','_UE4SSLuaEventBridge/tOoLs/a.txt','_UE4SSLuaEventBridge/x/TOOLS/','_UE4SSLuaEventBridge\Tools\a.txt')){
+    foreach($forbidden in @('Tools/a.txt','_ModCore_UE4SSLuaEventBridge/tOoLs/a.txt','_ModCore_UE4SSLuaEventBridge/x/TOOLS/','_ModCore_UE4SSLuaEventBridge\Tools\a.txt')){
         $bad=Join-Path $fixture ([guid]::NewGuid().ToString('N')+'.zip')
         Copy-Item -LiteralPath $result.archive -Destination $bad
         $zip=[IO.Compression.ZipFile]::Open($bad,[IO.Compression.ZipArchiveMode]::Update)

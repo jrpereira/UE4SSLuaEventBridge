@@ -35,7 +35,7 @@ int main()
     using UE4SSLuaEventBridge::migrate_legacy_install;
 
     const auto root = unique_root();
-    const auto current = root / "_UE4SSLuaEventBridge" / "dlls" / "main.dll";
+    const auto current = root / "_ModCore_UE4SSLuaEventBridge" / "dlls" / "main.dll";
     std::filesystem::create_directories(current.parent_path());
 
     assert(migrate_legacy_install(current) == LegacyInstallMigrationResult::no_legacy_install);
@@ -43,19 +43,19 @@ int main()
     const auto legacy = root / "UE4SSLuaEventBridge";
     std::filesystem::create_directories(legacy);
     assert(migrate_legacy_install(current) == LegacyInstallMigrationResult::migrated);
-    assert(read(legacy / "deprecated.txt") == "_UE4SSLuaEventBridge");
+    assert(read(legacy / "deprecated.txt") == "_ModCore_UE4SSLuaEventBridge");
 
     std::filesystem::remove(legacy / "deprecated.txt");
     write(legacy / "enabled.txt", "enabled");
     assert(migrate_legacy_install(current) == LegacyInstallMigrationResult::migrated);
     assert(!std::filesystem::exists(legacy / "enabled.txt"));
-    assert(read(legacy / "deprecated.txt") == "_UE4SSLuaEventBridge");
+    assert(read(legacy / "deprecated.txt") == "_ModCore_UE4SSLuaEventBridge");
     assert(!std::filesystem::exists(legacy / "deprecated.txt.tmp"));
 
     write(legacy / "enabled.txt", "preserve after migration");
     assert(migrate_legacy_install(current) == LegacyInstallMigrationResult::already_migrated);
     assert(read(legacy / "enabled.txt") == "preserve after migration");
-    assert(read(legacy / "deprecated.txt") == "_UE4SSLuaEventBridge");
+    assert(read(legacy / "deprecated.txt") == "_ModCore_UE4SSLuaEventBridge");
 
     const auto legacy_location = root / "UE4SSLuaEventBridge" / "dlls" / "main.dll";
     assert(migrate_legacy_install(legacy_location) ==
