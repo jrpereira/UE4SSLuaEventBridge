@@ -5,9 +5,11 @@
 
 namespace UE4SSLuaEventBridge
 {
-inline constexpr std::array<std::string_view, 3> embedded_lua_api_chunks{
+inline constexpr std::array<std::string_view, 5> embedded_lua_api_chunks{
     R"UE4SSLEB_LUA(@UE4SSLEB_LUA_API_1@)UE4SSLEB_LUA",
     R"UE4SSLEB_LUA(@UE4SSLEB_LUA_API_2@)UE4SSLEB_LUA",
     R"UE4SSLEB_LUA(@UE4SSLEB_LUA_API_3@)UE4SSLEB_LUA",
+    R"UE4SSLEB_LUA(@UE4SSLEB_LUA_API_4@)UE4SSLEB_LUA",
+    R"UE4SSLEB_LUA(@UE4SSLEB_LUA_API_5@)UE4SSLEB_LUA",
 };
 }

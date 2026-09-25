@@ -76,7 +76,13 @@ std::optional<CandidateMetadata> read_metadata(const std::filesystem::path& path
     const auto unreal_version = resource_string(data, L"UnrealVersion");
     if (!product_version || !product_name || !original_filename || !role ||
         !implementation_abi || !ue4ss_commit || !unreal_version) return {};
-    const std::string narrow_version(product_version->begin(), product_version->end());
+    std::string narrow_version;
+    narrow_version.reserve(product_version->size());
+    for (const auto character : *product_version)
+    {
+        if (character > static_cast<wchar_t>(0x7f)) return {};
+        narrow_version.push_back(static_cast<char>(character));
+    }
     const auto version = parse_semantic_version(narrow_version);
     if (!version) return {};
     return CandidateMetadata{

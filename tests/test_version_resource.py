@@ -7,6 +7,28 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class VersionResourceTests(unittest.TestCase):
+    def test_embedded_lua_literals_stay_within_msvc_limit(self):
+        source = (ROOT / 'bridge/lua/bridge_api.lua').read_text()
+        cmake = (ROOT / 'bridge/CMakeLists.txt').read_text()
+        template = (ROOT / 'bridge/cmake/EmbeddedLuaAPI.hpp.in').read_text()
+        declarations = re.findall(
+            r'string\(SUBSTRING "\$\{UE4SSLEB_LUA_API\}" (\d+) (-?\d+) (UE4SSLEB_LUA_API_\d+)\)',
+            cmake)
+        self.assertTrue(declarations)
+
+        rebuilt = ''
+        expected_offset = 0
+        for offset_text, length_text, name in declarations:
+            offset = int(offset_text)
+            length = int(length_text)
+            self.assertEqual(offset, expected_offset)
+            chunk = source[offset:] if length == -1 else source[offset:offset + length]
+            self.assertLessEqual(len(chunk), 7000)
+            self.assertEqual(template.count(f'@{name}@'), 1)
+            rebuilt += chunk
+            expected_offset += len(chunk)
+        self.assertEqual(rebuilt, source)
+
     def test_resource_and_packaging_share_canonical_version(self):
         header = (ROOT / 'contract/Version.hpp').read_text()
         match = re.search(r'^#define UE4SSLEB_VERSION "(\d+)\.(\d+)\.(\d+)"$', header, re.M)
