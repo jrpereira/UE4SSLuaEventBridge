@@ -107,14 +107,18 @@ The lifetime API assigns a non-owning decimal-string token to a live UObject
 address:
 
 ```lua
-local token, err = UE4SSLuaEventBridge.lifetimes.capture(address)
+local token, err = UE4SSLuaEventBridge.lifetimes.captureObject(object)
+local trustedToken, trustedError =
+    UE4SSLuaEventBridge.lifetimes.captureAddress(address)
 local stillLive = UE4SSLuaEventBridge.lifetimes.valid(address, token)
 local lostToken, lossError = UE4SSLuaEventBridge.lifetimes.takeLost()
 ```
 
-Call `capture` only with `object:GetAddress()` from a freshly resolved wrapper
-after `object:IsValid()` succeeds, and call all three lifetime operations on the
-Unreal game thread. A token
+Use `captureObject` for ordinary UE4SS UObject wrappers. It checks `IsValid()`
+and obtains `GetAddress()` synchronously before native identity validation. Use
+`captureAddress` only for a trusted address obtained from a freshly resolved live
+object; a retained numeric address cannot prove its own provenance. Call all
+lifetime operations on the Unreal game thread. A token
 does not root the object. Native object-array listeners invalidate observations
 without entering Lua; `takeLost` drains one invalidated token at a time from the
 calling session. Tokens and loss queues are isolated between Lua sessions and

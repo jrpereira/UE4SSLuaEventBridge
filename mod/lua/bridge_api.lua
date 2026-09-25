@@ -261,8 +261,20 @@ bridge.onLoopStart = function(callback)
 end
 
 bridge.lifetimes = {
-    capture = function(address)
+    captureAddress = function(address)
         if not __positiveInteger(address) then return nil, "address must be a positive integer" end
+        return UE4SSLuaEventBridge_LifetimeCapture(__session, address)
+    end,
+    captureObject = function(object)
+        if object == nil then return nil, "object must be a live UE4SS UObject wrapper" end
+        local checked, valid = pcall(function() return object:IsValid() end)
+        if not checked or valid ~= true then
+            return nil, "object must be a live UE4SS UObject wrapper"
+        end
+        local resolved, address = pcall(function() return object:GetAddress() end)
+        if not resolved or not __positiveInteger(address) then
+            return nil, "object did not provide a valid UObject address"
+        end
         return UE4SSLuaEventBridge_LifetimeCapture(__session, address)
     end,
     valid = function(address, token)

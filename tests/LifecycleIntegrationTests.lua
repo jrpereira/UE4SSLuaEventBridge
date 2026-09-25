@@ -198,7 +198,14 @@ end
 cases["lifetime wrapper preserves decimal tokens and drains losses"] = function()
     local f = fixture()
     local s = f:loadSession()
-    local token = check(s.api.lifetimes.capture(4096))
+    local token = check(s.api.lifetimes.captureAddress(4096))
+    local object = {
+        IsValid = function() return true end,
+        GetAddress = function() return 4096 end,
+    }
+    check(s.api.lifetimes.captureObject(object) == token)
+    local missing, why = s.api.lifetimes.captureObject({IsValid = function() return false end})
+    check(missing == nil and why:find("live UE4SS UObject wrapper", 1, true))
     check(token == "5096" and s.api.lifetimes.valid(4096, token))
     check(not s.api.lifetimes.valid(4096, "05096"), "noncanonical token accepted")
     s.lostToken = token
