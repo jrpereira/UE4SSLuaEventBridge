@@ -502,7 +502,11 @@ public:
 
     void OnUObjectArrayShutdown() override
     {
-        listeners_registered_.store(false, std::memory_order_release);
+        if (listeners_registered_.exchange(false, std::memory_order_acq_rel))
+        {
+            RC::Unreal::FUObjectArray::RemoveUObjectCreateListener(this);
+            RC::Unreal::FUObjectArray::RemoveUObjectDeleteListener(this);
+        }
         lifetimes_.shutdown();
     }
 

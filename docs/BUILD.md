@@ -54,6 +54,7 @@ installing `ProcessEvent` hooks, object scans, or key-state polling. Enhanced
 Input remains responsible for trigger evaluation and value generation. A separate
 lifetime service uses UE4SS's native UObject create/delete listeners only to
 invalidate explicitly captured, session-owned observations; listeners never call Lua.
+They unregister during `OnUObjectArrayShutdown` before their storage is destroyed.
 Copied events are delivered through scheduled queue checks; see [dispatch limits and tuning](DEVELOPERS.md#dispatch-limits-and-tuning).
 
 The backend is game-agnostic. A caller supplies both the exact live

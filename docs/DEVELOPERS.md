@@ -112,8 +112,9 @@ local stillLive = UE4SSLuaEventBridge.lifetimes.valid(address, token)
 local lostToken, lossError = UE4SSLuaEventBridge.lifetimes.takeLost()
 ```
 
-Call `capture` only with the address from a freshly resolved live UObject
-wrapper, and call all three lifetime operations on the Unreal game thread. A token
+Call `capture` only with `object:GetAddress()` from a freshly resolved wrapper
+after `object:IsValid()` succeeds, and call all three lifetime operations on the
+Unreal game thread. A token
 does not root the object. Native object-array listeners invalidate observations
 without entering Lua; `takeLost` drains one invalidated token at a time from the
 calling session. Tokens and loss queues are isolated between Lua sessions and
