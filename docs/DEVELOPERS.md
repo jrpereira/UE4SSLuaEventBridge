@@ -83,6 +83,12 @@ Gate optional features on `GetCapabilities()`. `GetVersion()` identifies the
 product release; `API_VERSION` identifies the API contract. A version number
 is useful metadata, but a poor crystal ball.
 
+`object_lifetimes` is `true` only after a one-time runtime ABI probe validates
+the configured UObject internal-index and object-item pointer/serial offsets
+against multiple live `UClass` objects. A failed probe leaves the capability
+false, skips listener registration, and makes every lifetime operation fail
+closed for the process.
+
 ## Loop start and object lifetimes
 
 `onLoopStart(callback)` registers a one-shot callback for the owning Lua

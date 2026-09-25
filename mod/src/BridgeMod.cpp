@@ -225,9 +225,19 @@ public:
     void on_unreal_init() override {
         backend_.set_queue_limit(configured_limit("UE4SSLEB_MAX_QUEUED_EVENTS", 65536, 1000000));
         backend_.initialize();
-        RC::Unreal::FUObjectArray::AddUObjectCreateListener(this);
-        RC::Unreal::FUObjectArray::AddUObjectDeleteListener(this);
-        listeners_registered_.store(true, std::memory_order_release);
+        const bool lifetime_abi_ready = probe_lifetime_abi();
+        lifetime_abi_ready_.store(lifetime_abi_ready, std::memory_order_release);
+        if (lifetime_abi_ready)
+        {
+            RC::Unreal::FUObjectArray::AddUObjectCreateListener(this);
+            RC::Unreal::FUObjectArray::AddUObjectDeleteListener(this);
+            listeners_registered_.store(true, std::memory_order_release);
+        }
+        else
+        {
+            OutputDebugStringA(
+                "[UE4SSLuaEventBridge] UObject lifetime ABI probe failed; lifetime API disabled\n");
+        }
     }
 
     void on_update() override
@@ -502,6 +512,7 @@ public:
 
     void OnUObjectArrayShutdown() override
     {
+        lifetime_abi_ready_.store(false, std::memory_order_release);
         if (listeners_registered_.exchange(false, std::memory_order_acq_rel))
         {
             RC::Unreal::FUObjectArray::RemoveUObjectCreateListener(this);
@@ -518,9 +529,11 @@ private:
     UE4SSLuaEventBridge::DispatchBacklog<UE4SSLuaEventBridge::EnhancedInputTrace> pending_traces_;
     UE4SSLuaEventBridge::LifecycleRegistry lifetimes_;
     std::atomic_bool listeners_registered_{};
+    std::atomic_bool lifetime_abi_ready_{};
 
     void stop_lifecycle_service()
     {
+        lifetime_abi_ready_.store(false, std::memory_order_release);
         if (listeners_registered_.exchange(false, std::memory_order_acq_rel))
         {
             RC::Unreal::FUObjectArray::RemoveUObjectCreateListener(this);
@@ -654,7 +667,8 @@ private:
         lua.set_bool(true); // Additive binding_snapshot capability.
         lua.set_bool(true); // Additive target_delivery_faults capability.
         lua.set_bool(true); // Additive loop_start capability.
-        lua.set_bool(true); // Additive object_lifetimes capability.
+        lua.set_bool(active_mod && active_mod->lifetime_abi_ready_.load(std::memory_order_acquire));
+        // Additive object_lifetimes capability, enabled only after the runtime ABI probe.
         return 14;
     }
 
@@ -727,9 +741,10 @@ private:
     }
 
     static std::optional<UE4SSLuaEventBridge::ObjectLifetimeIdentity> read_object_identity(
-        std::uintptr_t address)
+        std::uintptr_t address,
+        bool require_game_thread = true)
     {
-        if (!address || !RC::Unreal::IsInGameThread()) return {};
+        if (!address || (require_game_thread && !RC::Unreal::IsInGameThread())) return {};
         const auto read = [](const void* source, void* destination, std::size_t size) {
             std::size_t copied{};
             return source && ReadProcessMemory(
@@ -756,6 +771,30 @@ private:
         return UE4SSLuaEventBridge::ObjectLifetimeIdentity{address, index, serial};
     }
 
+    static bool probe_lifetime_abi()
+    {
+        try
+        {
+            std::vector<RC::Unreal::UObject*> classes;
+            RC::Unreal::UObjectGlobals::FindAllOf(L"Class", classes);
+            std::unordered_set<int32_t> verified_indices;
+            for (auto* object : classes)
+            {
+                if (!object) continue;
+                const auto address = reinterpret_cast<std::uintptr_t>(object);
+                const auto first = read_object_identity(address, false);
+                const auto second = read_object_identity(address, false);
+                if (!first || !second || *first != *second) continue;
+                verified_indices.insert(first->index);
+                if (verified_indices.size() >= 2) return true;
+            }
+        }
+        catch (...)
+        {
+        }
+        return false;
+    }
+
     static std::optional<uint64_t> parse_token(std::string_view value)
     {
         uint64_t token{};
@@ -769,7 +808,8 @@ private:
     {
         auto* session = consume_session(lua);
         const auto address_value = lua.get_integer(1);
-        if (!session || !active_mod->listeners_registered_.load(std::memory_order_acquire))
+        if (!session || !active_mod->lifetime_abi_ready_.load(std::memory_order_acquire) ||
+            !active_mod->listeners_registered_.load(std::memory_order_acquire))
         {
             lua.set_nil();
             lua.set_string("object lifetime service is unavailable");
@@ -808,6 +848,7 @@ private:
         const auto address_value = lua.get_integer(1);
         const auto token = parse_token(lua.get_string(1));
         if (!session || address_value <= 0 || !token ||
+            !active_mod->lifetime_abi_ready_.load(std::memory_order_acquire) ||
             !active_mod->listeners_registered_.load(std::memory_order_acquire))
         {
             lua.set_bool(false);
@@ -821,12 +862,15 @@ private:
     static int lifetime_take_lost(const Lua& lua)
     {
         auto* session = consume_session(lua);
-        if (!session || !RC::Unreal::IsInGameThread())
+        if (!session || !active_mod->lifetime_abi_ready_.load(std::memory_order_acquire) ||
+            !RC::Unreal::IsInGameThread())
         {
             lua.set_nil();
             lua.set_string(!session
                 ? "Lua session is not registered or is stopping"
-                : "lifetime loss draining must run on the Unreal game thread");
+                : !active_mod->lifetime_abi_ready_.load(std::memory_order_acquire)
+                    ? "object lifetime service is unavailable"
+                    : "lifetime loss draining must run on the Unreal game thread");
             return 2;
         }
         const auto result = active_mod->lifetimes_.take_lost(session->id);

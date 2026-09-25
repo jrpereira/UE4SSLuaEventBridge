@@ -10,6 +10,8 @@
   rate gate.
 - Add session-isolated, non-owning UObject lifetime tokens with native
   create/delete invalidation, bounded loss queues, and fail-closed overflow.
+- Gate UObject lifetime support behind a one-time runtime layout probe; failed
+  address/index/slot/serial validation disables the capability and listeners.
 
 API compatibility is version 5. The lifecycle APIs are additive and advertised
 through `GetCapabilities()`.

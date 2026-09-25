@@ -55,6 +55,10 @@ Input remains responsible for trigger evaluation and value generation. A separat
 lifetime service uses UE4SS's native UObject create/delete listeners only to
 invalidate explicitly captured, session-owned observations; listeners never call Lua.
 They unregister during `OnUObjectArrayShutdown` before their storage is destroyed.
+Before listener registration, a one-time startup probe resolves live `UClass`
+objects and requires stable address/index/slot/serial agreement for at least two
+distinct object-array entries. Failure disables the lifetime capability and no
+listener is registered. There is no periodic object scan.
 Copied events are delivered through scheduled queue checks; see [dispatch limits and tuning](DEVELOPERS.md#dispatch-limits-and-tuning).
 
 The backend is game-agnostic. A caller supplies both the exact live
