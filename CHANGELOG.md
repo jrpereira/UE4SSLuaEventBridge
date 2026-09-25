@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.0.2
+## v1.0.7
 
 - Consolidate API, lifecycle, diagnostics, and build documentation.
 - Correct queue-statistics documentation and include current capability fields.
