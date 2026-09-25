@@ -1288,10 +1288,11 @@ UE4SSLEB_ModHandle start_implementation()
     return new UE4SSLuaEventBridgeMod();
 }
 
-void uninstall_implementation(UE4SSLEB_ModHandle mod)
+UE4SSLEB_UninstallResult uninstall_implementation(UE4SSLEB_ModHandle mod)
 {
     auto* bridge = static_cast<UE4SSLuaEventBridgeMod*>(mod);
-    if (bridge && !bridge->prepare_for_unload())
+    const bool retain_module = bridge && !bridge->prepare_for_unload();
+    if (retain_module)
     {
         // UE4SS unloads C++ mods from its event-loop thread. If Unreal still
         // owns a native binding (including an engine-created clone), retain
@@ -1299,6 +1300,7 @@ void uninstall_implementation(UE4SSLEB_ModHandle mod)
         (void)pin_current_module();
     }
     delete bridge;
+    return retain_module ? UE4SSLEB_UNINSTALL_RETAIN_MODULE : UE4SSLEB_UNINSTALL_CAN_UNLOAD;
 }
 
 const UE4SSLEB_ImplementationV1 implementation_api{

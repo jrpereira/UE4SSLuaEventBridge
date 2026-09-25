@@ -14,6 +14,12 @@
 
 typedef void* UE4SSLEB_ModHandle;
 
+typedef enum UE4SSLEB_UninstallResult
+{
+    UE4SSLEB_UNINSTALL_CAN_UNLOAD = 0,
+    UE4SSLEB_UNINSTALL_RETAIN_MODULE = 1,
+} UE4SSLEB_UninstallResult;
+
 typedef struct UE4SSLEB_ImplementationV1
 {
     uint32_t struct_size;
@@ -24,7 +30,7 @@ typedef struct UE4SSLEB_ImplementationV1
     uint32_t version_minor;
     uint32_t version_patch;
     UE4SSLEB_ModHandle (UE4SSLEB_CALL *start)(void);
-    void (UE4SSLEB_CALL *uninstall)(UE4SSLEB_ModHandle);
+    UE4SSLEB_UninstallResult (UE4SSLEB_CALL *uninstall)(UE4SSLEB_ModHandle);
 } UE4SSLEB_ImplementationV1;
 
 typedef const UE4SSLEB_ImplementationV1* (UE4SSLEB_CALL *UE4SSLEB_GetImplementationV1Fn)(void);

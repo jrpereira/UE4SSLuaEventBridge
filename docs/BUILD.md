@@ -60,6 +60,11 @@ bootstrap and selected implementation and creating the archive.
 them, and loads the highest compatible candidate. Changing selection requires a
 complete UE4SS unload or process restart.
 
+If native Unreal objects still depend on implementation code during teardown,
+the implementation reports that condition to the bootstrap. The bootstrap keeps
+the DLL and its process-wide selection claim resident, so another bridge version
+cannot activate before process exit.
+
 A different UE4SS revision requires ABI validation against `97b7e501`.
 “Close enough” is not an ABI guarantee.
 

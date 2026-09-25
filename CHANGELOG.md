@@ -20,6 +20,8 @@
   versioned bridge implementation selected by `dlls/main.json`.
 - Add exact and automatic implementation selection with filename, version,
   private-ABI, UE4SS-build, and Unreal-target validation before activation.
+- Keep the selected implementation and process-wide claim resident when native
+  bindings prevent safe unload, blocking activation of a second version.
 
 API compatibility is version 5. The lifecycle APIs are additive and advertised
 through `GetCapabilities()`.

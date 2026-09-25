@@ -220,25 +220,28 @@ UE4SSLEB_BOOTSTRAP_API void uninstall_mod(void* mod)
     std::scoped_lock lock(implementation_mutex);
     auto* module = implementation_module;
     const auto* api = implementation_api;
-    implementation_module = nullptr;
-    implementation_api = nullptr;
     if (!module || !api)
     {
-        if (bootstrap_claim) CloseHandle(bootstrap_claim);
-        bootstrap_claim = nullptr;
         return;
     }
+    UE4SSLEB_UninstallResult result{};
     try
     {
-        api->uninstall(mod);
+        result = api->uninstall(mod);
     }
     catch (...)
     {
         log("implementation threw during uninstall; retaining its module");
-        if (bootstrap_claim) CloseHandle(bootstrap_claim);
-        bootstrap_claim = nullptr;
+        implementation_api = nullptr;
         return;
     }
+    implementation_api = nullptr;
+    if (result != UE4SSLEB_UNINSTALL_CAN_UNLOAD)
+    {
+        log("implementation retained native code; restart the process before selecting another version");
+        return;
+    }
+    implementation_module = nullptr;
     FreeLibrary(module);
     if (bootstrap_claim) CloseHandle(bootstrap_claim);
     bootstrap_claim = nullptr;
