@@ -3,7 +3,7 @@
 #define _WIN32
 #endif
 #define UE4SS_IMPORT
-#include <UE4SSLuaEventBridge/UE4SSABI.hpp>
+#include <UE4SSABI.hpp>
 #include <array>
 #include <cassert>
 namespace RC::Unreal {

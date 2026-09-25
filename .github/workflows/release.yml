@@ -56,7 +56,9 @@ jobs:
         run: cmake --build build --config Release
       - name: Verify DLL version resource
         shell: pwsh
-        run: ./tools/test-dll-version.ps1 -Dll build/dist/_ModCore_UE4SSLuaEventBridge/dlls/main.dll -ExpectedVersion $env:RELEASE_VERSION
+        run: |
+          ./tools/test-dll-version.ps1 -Dll build/dist/_ModCore_UE4SSLuaEventBridge/dlls/main.dll -ExpectedVersion $env:RELEASE_VERSION -ExpectedProductName 'UE4SSLuaEventBridge Bootstrap' -ExpectedOriginalFilename 'main.dll'
+          ./tools/test-dll-version.ps1 -Dll "build/dist/_ModCore_UE4SSLuaEventBridge/dlls/versions/UE4SSLuaEventBridge-$env:RELEASE_VERSION.dll" -ExpectedVersion $env:RELEASE_VERSION -ExpectedOriginalFilename "UE4SSLuaEventBridge-$env:RELEASE_VERSION.dll"
       - name: Package and checksum
         shell: pwsh
         run: |

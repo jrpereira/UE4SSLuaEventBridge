@@ -2,9 +2,9 @@
 
 #ifdef _WIN32
 
-#include <UE4SSLuaEventBridge/EnhancedInputABI.hpp>
-#include <UE4SSLuaEventBridge/QueueBuffers.hpp>
-#include <UE4SSLuaEventBridge/QueueCapacity.hpp>
+#include <EnhancedInputABI.hpp>
+#include <QueueBuffers.hpp>
+#include <QueueCapacity.hpp>
 
 #include <atomic>
 #include <cstdint>

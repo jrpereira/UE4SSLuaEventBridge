@@ -1,4 +1,4 @@
-#include <UE4SSLuaEventBridge/LegacyInstallMigration.hpp>
+#include <LegacyInstallMigration.hpp>
 
 #include <cassert>
 #include <chrono>
@@ -35,7 +35,8 @@ int main()
     using UE4SSLuaEventBridge::migrate_legacy_install;
 
     const auto root = unique_root();
-    const auto current = root / "_ModCore_UE4SSLuaEventBridge" / "dlls" / "main.dll";
+    const auto current = root / "_ModCore_UE4SSLuaEventBridge" / "dlls" / "versions" /
+                         "UE4SSLuaEventBridge-1.0.7.dll";
     std::filesystem::create_directories(current.parent_path());
 
     assert(migrate_legacy_install(current) == LegacyInstallMigrationResult::no_legacy_install);

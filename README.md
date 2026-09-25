@@ -32,14 +32,21 @@ Extract the ZIP into the UE4SS `Mods` directory to produce:
 Mods/
 └── _ModCore_UE4SSLuaEventBridge/
     ├── dlls/
-    │   └── main.dll
+    │   ├── main.dll
+    │   ├── main.json
+    │   └── versions/
+    │       └── UE4SSLuaEventBridge-1.0.7.dll
     └── enabled.txt
 ```
 
-The DLL carries a Windows version resource and can be inspected without loading
-it. In PowerShell, `(Get-Item .\dlls\main.dll).VersionInfo.ProductVersion`
-returns the packaged product version. Use the published SHA-256 checksum to
-verify the exact archive bytes.
+`main.dll` is a small bootstrap. It reads `dlls/main.json`, validates the
+selected implementation's embedded product, version, private ABI, UE4SS commit,
+and Unreal target, then loads it from `dlls/versions`. A missing configuration
+or an explicit `"version": "auto"` selects the highest compatible discovered
+version. A malformed configuration or unavailable exact version fails closed.
+
+Both DLLs carry Windows version resources and can be inspected without loading
+them. Use the published SHA-256 checksum to verify the exact archive bytes.
 
 For deterministic startup before Lua mods that consume the bridge, add this as
 the first mod entry in `Mods/mods.txt`:

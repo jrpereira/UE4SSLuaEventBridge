@@ -6,11 +6,24 @@ $ErrorActionPreference='Stop'
 if($SourceCommit -notmatch '^[0-9a-fA-F]{40}$'){throw 'SourceCommit must be a full Git commit SHA'}
 $metadata=& (Join-Path $PSScriptRoot 'release-metadata.ps1')
 $root=(Resolve-Path -LiteralPath $Distribution).Path
-$dll=Join-Path $root 'dlls/main.dll'
-if(-not $AllowNonPeTestFixture){
-    & (Join-Path $PSScriptRoot 'test-dll-version.ps1') -Dll $dll -ExpectedVersion $metadata.version | Out-Null
+$implementationName="UE4SSLuaEventBridge-$($metadata.version).dll"
+$bootstrap=Join-Path $root 'dlls/main.dll'
+$implementation=Join-Path $root "dlls/versions/$implementationName"
+$configuration=Join-Path $root 'dlls/main.json'
+if(-not (Test-Path -LiteralPath $configuration -PathType Leaf)){throw 'Missing package payload: dlls/main.json'}
+$selection=Get-Content -LiteralPath $configuration -Raw|ConvertFrom-Json
+$selectionKeys=@($selection.PSObject.Properties.Name)
+if($selectionKeys.Count -ne 2 -or 'schema' -cnotin $selectionKeys -or 'version' -cnotin $selectionKeys -or
+   $selection.schema -ne 1 -or $selection.version -cne $metadata.version){
+    throw 'main.json must select the packaged implementation version'
 }
-$paths=@('enabled.txt','dlls/main.dll')
+if(-not $AllowNonPeTestFixture){
+    & (Join-Path $PSScriptRoot 'test-dll-version.ps1') -Dll $bootstrap -ExpectedVersion $metadata.version `
+        -ExpectedProductName 'UE4SSLuaEventBridge Bootstrap' -ExpectedOriginalFilename 'main.dll' | Out-Null
+    & (Join-Path $PSScriptRoot 'test-dll-version.ps1') -Dll $implementation -ExpectedVersion $metadata.version `
+        -ExpectedProductName 'UE4SSLuaEventBridge' -ExpectedOriginalFilename $implementationName | Out-Null
+}
+$paths=@('enabled.txt','dlls/main.dll','dlls/main.json',"dlls/versions/$implementationName")
 $files=@()
 foreach($relative in $paths){
     $path=Join-Path $root $relative

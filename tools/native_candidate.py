@@ -11,7 +11,7 @@ from deployment_preflight import digest
 
 def sources(root):
     paths = [root/'CMakeLists.txt']
-    for directory in ['mod', 'abi', 'cmake', 'tests']:
+    for directory in ['bootstrap', 'bridge', 'contract', 'packaging', 'tests']:
         paths.extend(p for p in (root/directory).rglob('*') if p.is_file()
                      and '__pycache__' not in p.parts and p.suffix not in {'.pyc','.pyo'})
     result = {}
@@ -25,7 +25,7 @@ def sources(root):
 
 
 def version(root):
-    text = (root/'mod/include/UE4SSLuaEventBridge/Version.hpp').read_text()
+    text = (root/'contract/Version.hpp').read_text()
     match = re.search(r'^#define UE4SSLEB_VERSION "([^"]+)"', text, re.M)
     if not match:
         raise ValueError('Bridge version missing')
@@ -35,7 +35,7 @@ def version(root):
 NATIVE_TEST_TARGETS = [
     'SessionAliasIndexTests', 'BindingSnapshotTests', 'WeakObjectPtrTests',
     'QueueBuffersTests', 'QueueDispatchScheduleTests', 'DispatchBudgetTests',
-    'NativeBackendLifecycleTests', 'LegacyInstallMigrationTests',
+    'NativeBackendLifecycleTests', 'LegacyInstallMigrationTests', 'BootstrapSelectionTests',
 ]
 LUA_TEST_SUITES = ['tests/LuaHelperTests.lua', 'tests/LifecycleIntegrationTests.lua']
 
@@ -77,7 +77,9 @@ def build(root, output, runner=subprocess.run, lua_executable=None):
     if sources(root) != before:
         raise RuntimeError('Source changed during build; no candidate manifest produced')
     staged = output/'dist/_ModCore_UE4SSLuaEventBridge'
-    files = {p:digest(staged/p) for p in ['dlls/main.dll','enabled.txt']}
+    paths = ['dlls/main.dll', 'dlls/main.json',
+             f'dlls/versions/UE4SSLuaEventBridge-{value}.dll', 'enabled.txt']
+    files = {p:digest(staged/p) for p in paths}
     if any(value is None for value in files.values()):
         raise RuntimeError('Native build did not produce the complete Windows DLL payload')
     manifest = {'module':'_ModCore_UE4SSLuaEventBridge','version':value,'files':files,
@@ -93,7 +95,10 @@ def build(root, output, runner=subprocess.run, lua_executable=None):
 
 def validate(manifest, root):
     provenance = manifest.get('native_provenance', {})
-    if manifest.get('module') != '_ModCore_UE4SSLuaEventBridge' or set(manifest.get('files',{})) != {'dlls/main.dll','enabled.txt'}:
+    value = manifest.get('version')
+    expected = {'dlls/main.dll', 'dlls/main.json',
+                f'dlls/versions/UE4SSLuaEventBridge-{value}.dll', 'enabled.txt'}
+    if manifest.get('module') != '_ModCore_UE4SSLuaEventBridge' or set(manifest.get('files',{})) != expected:
         raise ValueError('Unexpected native candidate payload')
     if provenance.get('configuration') != 'Release' or provenance.get('experimental_component_layout') is not False or provenance.get('tests_passed') is not True:
         raise ValueError('Candidate lacks a verified production build record; rebuild with native_candidate.py')

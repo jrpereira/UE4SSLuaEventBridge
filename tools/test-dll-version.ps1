@@ -1,6 +1,8 @@
 param(
     [Parameter(Mandatory)][string]$Dll,
-    [string]$ExpectedVersion
+    [string]$ExpectedVersion,
+    [string]$ExpectedProductName='UE4SSLuaEventBridge',
+    [string]$ExpectedOriginalFilename
 )
 $ErrorActionPreference='Stop'
 if(-not $ExpectedVersion){
@@ -19,10 +21,10 @@ if((Compare-Object $expectedParts $actualParts -SyncWindow 0)){
 if($info.ProductVersion -cne $ExpectedVersion){
     throw "DLL ProductVersion mismatch: expected $ExpectedVersion, got $($info.ProductVersion)"
 }
-if($info.ProductName -cne 'UE4SSLuaEventBridge'){
+if($info.ProductName -cne $ExpectedProductName){
     throw "Unexpected DLL product name: $($info.ProductName)"
 }
-if($info.OriginalFilename -cne 'main.dll'){
+if($ExpectedOriginalFilename -and $info.OriginalFilename -cne $ExpectedOriginalFilename){
     throw "Unexpected original filename: $($info.OriginalFilename)"
 }
 [pscustomobject]@{

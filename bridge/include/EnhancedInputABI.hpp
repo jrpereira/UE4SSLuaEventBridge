@@ -2,7 +2,7 @@
 
 #ifdef _WIN32
 
-#include <UE4SSLuaEventBridge/UE4SSABI.hpp>
+#include <UE4SSABI.hpp>
 
 #include <atomic>
 #include <cstddef>

@@ -152,7 +152,7 @@ local function fixture()
         end
         env.UE4SSLuaEventBridge_UnbindAll = function(id) return bulkUnbind(id, false) end
         env.UE4SSLuaEventBridge_UnbindAllPreserveTargets = function(id) return bulkUnbind(id, true) end
-        session.dispatch = check(loadfile("mod/lua/bridge_api.lua", "t", env))()
+        session.dispatch = check(loadfile("bridge/lua/bridge_api.lua", "t", env))()
         session.api = env.UE4SSLuaEventBridge
         session.cleanup = env.__UE4SSLuaEventBridge_CloseHelperScopes
         session.stop = env.__UE4SSLuaEventBridge_StopHelperScopes

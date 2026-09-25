@@ -1,4 +1,4 @@
-#include <UE4SSLuaEventBridge/SessionAliasIndex.hpp>
+#include <SessionAliasIndex.hpp>
 
 #include <array>
 #include <cassert>

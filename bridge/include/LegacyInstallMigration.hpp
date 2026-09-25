@@ -25,7 +25,10 @@ inline LegacyInstallMigrationResult migrate_legacy_install(
 {
     try
     {
-        const auto current_mod = current_module_file.parent_path().parent_path();
+        const auto dll_directory = current_module_file.parent_path();
+        const auto current_mod = dll_directory.filename() == L"versions"
+            ? dll_directory.parent_path().parent_path()
+            : dll_directory.parent_path();
         if (current_mod.filename().wstring() != current_mod_folder)
         {
             return LegacyInstallMigrationResult::unexpected_current_location;

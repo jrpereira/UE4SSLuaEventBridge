@@ -1,13 +1,14 @@
-#include <UE4SSLuaEventBridge/EnhancedInputBackend.hpp>
-#include <UE4SSLuaEventBridge/EmbeddedLuaAPI.hpp>
-#include <UE4SSLuaEventBridge/SessionAliasIndex.hpp>
-#include <UE4SSLuaEventBridge/QueueDispatchSchedule.hpp>
-#include <UE4SSLuaEventBridge/UE4SSABI.hpp>
-#include <UE4SSLuaEventBridge/Version.hpp>
-#include <UE4SSLuaEventBridge/DispatchBudget.hpp>
-#include <UE4SSLuaEventBridge/DispatchBacklog.hpp>
-#include <UE4SSLuaEventBridge/LegacyInstallMigration.hpp>
-#include <UE4SSLuaEventBridge/LifecycleRegistry.hpp>
+#include <EnhancedInputBackend.hpp>
+#include <EmbeddedLuaAPI.hpp>
+#include <SessionAliasIndex.hpp>
+#include <QueueDispatchSchedule.hpp>
+#include <UE4SSABI.hpp>
+#include <Version.hpp>
+#include <DispatchBudget.hpp>
+#include <DispatchBacklog.hpp>
+#include <LegacyInstallMigration.hpp>
+#include <LifecycleRegistry.hpp>
+#include <ImplementationABI.h>
 
 #include <array>
 #include <atomic>
@@ -1280,11 +1281,14 @@ private:
 };
 }
 
-#define UE4SS_LUA_EVENT_BRIDGE_API __declspec(dllexport)
-extern "C"
+namespace
 {
-UE4SS_LUA_EVENT_BRIDGE_API RC::CppUserModBase* start_mod() { return new UE4SSLuaEventBridgeMod(); }
-UE4SS_LUA_EVENT_BRIDGE_API void uninstall_mod(RC::CppUserModBase* mod)
+UE4SSLEB_ModHandle start_implementation()
+{
+    return new UE4SSLuaEventBridgeMod();
+}
+
+void uninstall_implementation(UE4SSLEB_ModHandle mod)
 {
     auto* bridge = static_cast<UE4SSLuaEventBridgeMod*>(mod);
     if (bridge && !bridge->prepare_for_unload())
@@ -1296,4 +1300,21 @@ UE4SS_LUA_EVENT_BRIDGE_API void uninstall_mod(RC::CppUserModBase* mod)
     }
     delete bridge;
 }
+
+const UE4SSLEB_ImplementationV1 implementation_api{
+    sizeof(UE4SSLEB_ImplementationV1),
+    UE4SSLEB_IMPLEMENTATION_MAGIC,
+    UE4SSLEB_IMPLEMENTATION_ABI,
+    UE4SSLEB_TARGET_UE4SS_COMMIT,
+    UE4SSLEB_VERSION_MAJOR,
+    UE4SSLEB_VERSION_MINOR,
+    UE4SSLEB_VERSION_PATCH,
+    &start_implementation,
+    &uninstall_implementation,
+};
+}
+
+extern "C" __declspec(dllexport) const UE4SSLEB_ImplementationV1* UE4SSLEB_GetImplementationV1()
+{
+    return &implementation_api;
 }

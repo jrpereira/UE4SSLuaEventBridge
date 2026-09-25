@@ -30,19 +30,35 @@ Expected output:
 
 ```text
 build\dist\_ModCore_UE4SSLuaEventBridge\dlls\main.dll
+build\dist\_ModCore_UE4SSLuaEventBridge\dlls\main.json
+build\dist\_ModCore_UE4SSLuaEventBridge\dlls\versions\UE4SSLuaEventBridge-1.0.7.dll
 ```
 
-The build embeds the product version as a Windows `VERSIONINFO` resource. It
-can be checked without loading the DLL:
+The repository contains two CMake projects. `bootstrap` builds `main.dll` with
+no UE4SS link dependency. `bridge` builds the versioned implementation and owns
+the UE4SS, Unreal, input, Lua, and lifetime code. The root CMake project builds
+and assembles both.
+
+The build embeds Windows `VERSIONINFO` resources in both DLLs. They can be
+checked without loading either module:
 
 ```powershell
-./tools/test-dll-version.ps1 -Dll build/dist/_ModCore_UE4SSLuaEventBridge/dlls/main.dll
+./tools/test-dll-version.ps1 `
+  -Dll build/dist/_ModCore_UE4SSLuaEventBridge/dlls/main.dll `
+  -ExpectedProductName 'UE4SSLuaEventBridge Bootstrap' `
+  -ExpectedOriginalFilename 'main.dll'
 ```
 
 The validator requires the numeric file version `MAJOR.MINOR.PATCH.0`, the
 three-part product version from `Version.hpp`, the product name, and the
 original filename to agree. Packaging runs the same check before hashing the
-DLL and creating the archive.
+bootstrap and selected implementation and creating the archive.
+
+`dlls/main.json` contains schema 1 and either an exact three-part version or
+`auto`. Exact selection never falls back. Automatic selection scans only
+`dlls/versions`, rejects metadata and compatibility mismatches without loading
+them, and loads the highest compatible candidate. Changing selection requires a
+complete UE4SS unload or process restart.
 
 A different UE4SS revision requires ABI validation against `97b7e501`.
 “Close enough” is not an ABI guarantee.
@@ -209,7 +225,7 @@ returns a nonzero exit code and fails the job.
 
 ### What is exercised
 
-The lifecycle suite loads the production `mod/lua/bridge_api.lua` into isolated
+The lifecycle suite loads the production `bridge/lua/bridge_api.lua` into isolated
 Lua environments. Each reload receives a fresh session ID and callback registry,
 while its simulated engine retains shared context, target and subscription
 registries. Assertions cover cleanup ownership, error propagation, callback

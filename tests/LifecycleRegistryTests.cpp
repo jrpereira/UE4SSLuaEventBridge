@@ -1,4 +1,4 @@
-#include <UE4SSLuaEventBridge/LifecycleRegistry.hpp>
+#include <LifecycleRegistry.hpp>
 
 #include <cassert>
 

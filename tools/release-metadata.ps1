@@ -1,6 +1,6 @@
 param([string]$ReleaseRef, [string]$OutputFile)
 $ErrorActionPreference='Stop'
-$header=Join-Path (Split-Path $PSScriptRoot) 'mod/include/UE4SSLuaEventBridge/Version.hpp'
+$header=Join-Path (Split-Path $PSScriptRoot) 'contract/Version.hpp'
 $source=Get-Content -LiteralPath $header -Raw
 if($source -notmatch '(?m)^#define UE4SSLEB_VERSION "([0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?)"\s*$'){
     throw 'Invalid product version'

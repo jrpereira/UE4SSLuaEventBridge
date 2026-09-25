@@ -1,11 +1,11 @@
-#include <UE4SSLuaEventBridge/EnhancedInputBackend.hpp>
+#include <EnhancedInputBackend.hpp>
 
 #ifdef _WIN32
 
 #include <algorithm>
-#include <UE4SSLuaEventBridge/QueueBuffers.hpp>
+#include <QueueBuffers.hpp>
 #include <sstream>
-#include <UE4SSLuaEventBridge/BindingSnapshot.hpp>
+#include <BindingSnapshot.hpp>
 #include <cstring>
 #include <new>
 #include <string_view>

@@ -16,6 +16,10 @@
   reject packaging when it differs from the source release version.
 - Rename the packaged mod folder to `_ModCore_UE4SSLuaEventBridge`; existing
   `_UE4SSLuaEventBridge` installs must rename the folder and `mods.txt` entry.
+- Split the native code into an independent bootstrap `main.dll` and a
+  versioned bridge implementation selected by `dlls/main.json`.
+- Add exact and automatic implementation selection with filename, version,
+  private-ABI, UE4SS-build, and Unreal-target validation before activation.
 
 API compatibility is version 5. The lifecycle APIs are additive and advertised
 through `GetCapabilities()`.

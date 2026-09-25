@@ -1,10 +1,16 @@
 param([Parameter(Mandatory)][string]$Archive)
 $ErrorActionPreference = 'Stop'
+$metadata=& (Join-Path $PSScriptRoot 'release-metadata.ps1')
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $Archive).Path)
 try {
-    $allowed = @('_ModCore_UE4SSLuaEventBridge/enabled.txt', '_ModCore_UE4SSLuaEventBridge/dlls/main.dll')
+    $allowed = @(
+        '_ModCore_UE4SSLuaEventBridge/enabled.txt',
+        '_ModCore_UE4SSLuaEventBridge/dlls/main.dll',
+        '_ModCore_UE4SSLuaEventBridge/dlls/main.json',
+        "_ModCore_UE4SSLuaEventBridge/dlls/versions/UE4SSLuaEventBridge-$($metadata.version).dll"
+    )
     foreach ($entry in $zip.Entries) {
         $normalized = $entry.FullName.Replace('\', '/')
         if ($normalized -match '(?i)(^|/)tools/') { throw "Forbidden Tools directory: $($entry.FullName)" }
