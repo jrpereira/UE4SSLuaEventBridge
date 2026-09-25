@@ -17,7 +17,7 @@ jobs:
   portable-tests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - run: sudo apt-get update && sudo apt-get install -y lua5.4
       - run: python3 -m unittest discover -s tests -p test_release_notes.py -v
       - run: bash tests/run-portable-tests.sh
@@ -27,22 +27,15 @@ jobs:
   windows-dll:
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
-      - uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
+      - uses: actions/checkout@v6
       - name: Release tooling tests
         # Metadata tests need PowerShell only, not the compiler.
         run: |
           ./tests/ReleaseMetadataTests.ps1
           ./tests/PackageReleaseTests.ps1
-      - name: Native lifecycle memory-safety tests
+      - name: Native lifecycle tests and build
         shell: pwsh
-        run: ./tests/NativeQueueSanitizerTests.ps1
-      - name: Configure DLL
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DUE4SSLEB_BUILD_TESTS=OFF
-      - name: Build
-        run: cmake --build build --config Release
+        run: ./tools/ci-windows-native.ps1
       - name: Verify DLL version resource
         shell: pwsh
         run: |
