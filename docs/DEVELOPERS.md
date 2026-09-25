@@ -62,7 +62,7 @@ The current API reports:
 
 ```lua
 {
-    api = 4,
+    api = 5,
     enhanced_input = true,
     explicit_target = true,
     helpers = true,
@@ -73,6 +73,8 @@ The current API reports:
     debug_tracing = true,
     binding_snapshot = true,
     target_delivery_faults = true,
+    loop_start = true,
+    object_lifetimes = true,
     target_ue4ss_commit = "97b7e501",
 }
 ```
@@ -80,6 +82,50 @@ The current API reports:
 Gate optional features on `GetCapabilities()`. `GetVersion()` identifies the
 product release; `API_VERSION` identifies the API contract. A version number
 is useful metadata, but a poor crystal ball.
+
+## Loop start and object lifetimes
+
+`onLoopStart(callback)` registers a one-shot callback for the owning Lua
+session. It runs from the first native `on_update` after that session starts,
+before the Enhanced Input queue's rate check. It is intended for work that must
+wait until the initial Lua-module loading batch has returned. The callback runs
+on UE4SS's update thread; schedule Unreal object work with
+`ExecuteInGameThread`. The returned function cancels a callback that has not yet
+run and returns whether cancellation succeeded. Registering after delivery is
+an error. Callback failures are logged and do not prevent other sessions or
+callbacks from running.
+
+```lua
+local unsubscribe = UE4SSLuaEventBridge.onLoopStart(function()
+    ExecuteInGameThread(function()
+        -- Resolve initial live objects here.
+    end)
+end)
+```
+
+The lifetime API assigns a non-owning decimal-string token to a live UObject
+address:
+
+```lua
+local token, err = UE4SSLuaEventBridge.lifetimes.capture(address)
+local stillLive = UE4SSLuaEventBridge.lifetimes.valid(address, token)
+local lostToken, lossError = UE4SSLuaEventBridge.lifetimes.takeLost()
+```
+
+Call `capture` only with the address from a freshly resolved live UObject
+wrapper, and call all three lifetime operations on the Unreal game thread. A token
+does not root the object. Native object-array listeners invalidate observations
+without entering Lua; `takeLost` drains one invalidated token at a time from the
+calling session. Tokens and loss queues are isolated between Lua sessions and
+are cleared when their session stops. Address or object-array index reuse gets a
+new token because identity also includes the current object-item serial number.
+
+Each session permits 4,096 live observations and 4,096 queued losses. Exceeding
+the observation limit rejects a new capture. Loss-queue overflow faults the
+session's lifetime service: all subsequent validations fail, capture is rejected,
+and `takeLost` returns an error instructing the consumer to discard cached object
+state and reload its Lua session. This fail-closed behavior avoids treating an
+incomplete invalidation stream as trustworthy.
 
 ## Library primitives
 

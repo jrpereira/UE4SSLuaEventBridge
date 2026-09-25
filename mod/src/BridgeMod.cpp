@@ -7,9 +7,11 @@
 #include <UE4SSLuaEventBridge/DispatchBudget.hpp>
 #include <UE4SSLuaEventBridge/DispatchBacklog.hpp>
 #include <UE4SSLuaEventBridge/LegacyInstallMigration.hpp>
+#include <UE4SSLuaEventBridge/LifecycleRegistry.hpp>
 
 #include <array>
 #include <atomic>
+#include <charconv>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -17,6 +19,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -40,6 +43,9 @@ extern "C" __declspec(dllimport) unsigned long UE4SSLEB_WINAPI GetEnvironmentVar
     const char* name, char* buffer, unsigned long size);
 
 extern "C" __declspec(dllimport) void UE4SSLEB_WINAPI OutputDebugStringA(const char* message);
+extern "C" __declspec(dllimport) void* UE4SSLEB_WINAPI GetCurrentProcess();
+extern "C" __declspec(dllimport) int UE4SSLEB_WINAPI ReadProcessMemory(
+    void*, const void*, void*, std::size_t, std::size_t*);
 
 #undef UE4SSLEB_WINAPI
 
@@ -51,6 +57,8 @@ struct LuaSession
     RC::LuaMadeSimple::Lua* lua{};
     int32_t dispatcher_ref{};
     std::atomic_bool active{true};
+    bool loop_start_delivered{};
+    std::unordered_set<uint64_t> loop_start_callbacks;
 };
 }
 
@@ -184,7 +192,10 @@ bool decode_packed_path(const Lua& lua, std::string& path, std::string& error)
         error);
 }
 
-class UE4SSLuaEventBridgeMod final : public RC::CppUserModBase
+class UE4SSLuaEventBridgeMod final :
+    public RC::CppUserModBase,
+    public RC::Unreal::FUObjectCreateListener,
+    public RC::Unreal::FUObjectDeleteListener
 {
 public:
     UE4SSLuaEventBridgeMod()
@@ -200,19 +211,28 @@ public:
 
     ~UE4SSLuaEventBridgeMod() override
     {
+        stop_lifecycle_service();
         (void)backend_.shutdown();
         active_mod = nullptr;
     }
 
-    [[nodiscard]] bool prepare_for_unload() { return backend_.shutdown(); }
+    [[nodiscard]] bool prepare_for_unload()
+    {
+        stop_lifecycle_service();
+        return backend_.shutdown();
+    }
 
     void on_unreal_init() override {
         backend_.set_queue_limit(configured_limit("UE4SSLEB_MAX_QUEUED_EVENTS", 65536, 1000000));
         backend_.initialize();
+        RC::Unreal::FUObjectArray::AddUObjectCreateListener(this);
+        RC::Unreal::FUObjectArray::AddUObjectDeleteListener(this);
+        listeners_registered_.store(true, std::memory_order_release);
     }
 
     void on_update() override
     {
+        flush_loop_start_callbacks();
         if (!queue_schedule_.due(UE4SSLuaEventBridge::QueueDispatchSchedule::Clock::now())) return;
         flush_delivery_faults();
         using Budget = UE4SSLuaEventBridge::DispatchBudget;
@@ -349,6 +369,11 @@ public:
         lua.register_function("UE4SSLuaEventBridge_UnbindAll", &unbind_all);
         lua.register_function("UE4SSLuaEventBridge_UnbindAllPreserveTargets", &unbind_all_preserve_targets);
         lua.register_function("UE4SSLuaEventBridge_TraceScope", &trace_scope);
+        lua.register_function("UE4SSLuaEventBridge_RegisterLoopStart", &register_loop_start);
+        lua.register_function("UE4SSLuaEventBridge_CancelLoopStart", &cancel_loop_start);
+        lua.register_function("UE4SSLuaEventBridge_LifetimeCapture", &lifetime_capture);
+        lua.register_function("UE4SSLuaEventBridge_LifetimeValid", &lifetime_valid);
+        lua.register_function("UE4SSLuaEventBridge_LifetimeTakeLost", &lifetime_take_lost);
 
         const auto session_script =
             std::string{"__UE4SSLuaEventBridge_SessionId = "} + std::to_string(session_ptr->id);
@@ -392,6 +417,7 @@ public:
             register_state(&main_lua);
             register_state(&async_lua);
             register_state(hook_lua);
+            lifetimes_.start_session(session_ptr->id);
         }
         catch (...)
         {
@@ -406,6 +432,13 @@ public:
     {
         auto* session = session_for(lua);
         if (!session) return;
+
+        lifetimes_.stop_session(session->id);
+        {
+            std::scoped_lock lock(session_mutex_);
+            session->loop_start_callbacks.clear();
+            session->loop_start_delivered = true;
+        }
 
         if (RC::Unreal::IsInGameThread())
         {
@@ -457,12 +490,80 @@ public:
         return found->second.get();
     }
 
+    void NotifyUObjectCreated(const RC::Unreal::UObjectBase* object, int32_t index) override
+    {
+        lifetimes_.invalidate(reinterpret_cast<std::uintptr_t>(object), index);
+    }
+
+    void NotifyUObjectDeleted(const RC::Unreal::UObjectBase* object, int32_t index) override
+    {
+        lifetimes_.invalidate(reinterpret_cast<std::uintptr_t>(object), index);
+    }
+
+    void OnUObjectArrayShutdown() override
+    {
+        listeners_registered_.store(false, std::memory_order_release);
+        lifetimes_.shutdown();
+    }
+
 private:
     UE4SSLuaEventBridge::QueueDispatchSchedule queue_schedule_{configured_queue_check_rate()};
     const uint32_t max_events_per_pass_{configured_limit("UE4SSLEB_MAX_EVENTS_PER_PASS", 256, 1000000)};
     const uint32_t max_dispatch_us_{configured_limit("UE4SSLEB_MAX_DISPATCH_US", 2000, 1000000)};
     UE4SSLuaEventBridge::DispatchBacklog<UE4SSLuaEventBridge::EnhancedInputEvent> pending_events_;
     UE4SSLuaEventBridge::DispatchBacklog<UE4SSLuaEventBridge::EnhancedInputTrace> pending_traces_;
+    UE4SSLuaEventBridge::LifecycleRegistry lifetimes_;
+    std::atomic_bool listeners_registered_{};
+
+    void stop_lifecycle_service()
+    {
+        if (listeners_registered_.exchange(false, std::memory_order_acq_rel))
+        {
+            RC::Unreal::FUObjectArray::RemoveUObjectCreateListener(this);
+            RC::Unreal::FUObjectArray::RemoveUObjectDeleteListener(this);
+        }
+        lifetimes_.shutdown();
+    }
+
+    void flush_loop_start_callbacks()
+    {
+        std::vector<std::pair<UE4SSLuaEventBridge::LuaSession*, uint64_t>> pending;
+        {
+            std::scoped_lock lock(session_mutex_);
+            for (auto& [_, owned] : sessions_)
+            {
+                auto* session = owned.get();
+                if (!session || !session->active.load(std::memory_order_acquire) ||
+                    session->loop_start_delivered) continue;
+                session->loop_start_delivered = true;
+                for (const auto token : session->loop_start_callbacks)
+                    pending.emplace_back(session, token);
+                session->loop_start_callbacks.clear();
+            }
+        }
+        for (const auto& [session, token] : pending)
+        {
+            if (!session->active.load(std::memory_order_acquire) || !session->lua) continue;
+            try
+            {
+                const auto& lua = *session->lua;
+                lua.registry().get_function_ref(session->dispatcher_ref);
+                lua.set_integer(-2);
+                lua.set_integer(static_cast<int64_t>(token));
+                lua.call_function(2, 0);
+            }
+            catch (const std::exception& error)
+            {
+                OutputDebugStringA("[UE4SSLuaEventBridge] loop-start callback failed: ");
+                OutputDebugStringA(error.what());
+                OutputDebugStringA("\n");
+            }
+            catch (...)
+            {
+                OutputDebugStringA("[UE4SSLuaEventBridge] loop-start callback failed: unknown exception\n");
+            }
+        }
+    }
 
     void flush_delivery_faults()
     {
@@ -536,7 +637,7 @@ private:
 
     static int get_capabilities(const Lua& lua)
     {
-        lua.set_integer(4);
+        lua.set_integer(5);
         lua.set_bool(active_mod && active_mod->backend_.available());
         lua.set_bool(true);
         lua.set_bool(true);
@@ -548,7 +649,9 @@ private:
         lua.set_string("97b7e501");
         lua.set_bool(true); // Additive binding_snapshot capability.
         lua.set_bool(true); // Additive target_delivery_faults capability.
-        return 12;
+        lua.set_bool(true); // Additive loop_start capability.
+        lua.set_bool(true); // Additive object_lifetimes capability.
+        return 14;
     }
 
     static int is_in_game_thread(const Lua& lua)
@@ -575,6 +678,174 @@ private:
         }
         const auto id = static_cast<uint64_t>(lua.get_integer(1));
         return active_mod->session_for_id(id);
+    }
+
+    static int register_loop_start(const Lua& lua)
+    {
+        auto* session = consume_session(lua);
+        const auto token = lua.get_integer(1);
+        if (!session || token <= 0)
+        {
+            lua.set_bool(false);
+            lua.set_string("invalid or stopping Lua session");
+            return 2;
+        }
+        std::scoped_lock lock(active_mod->session_mutex_);
+        if (session->loop_start_delivered)
+        {
+            lua.set_bool(false);
+            lua.set_string("loop-start notification has already been delivered");
+            return 2;
+        }
+        if (session->loop_start_callbacks.size() >= 4096)
+        {
+            lua.set_bool(false);
+            lua.set_string("loop-start callback capacity exceeded");
+            return 2;
+        }
+        session->loop_start_callbacks.insert(static_cast<uint64_t>(token));
+        lua.set_bool(true);
+        return 1;
+    }
+
+    static int cancel_loop_start(const Lua& lua)
+    {
+        auto* session = consume_session(lua);
+        const auto token = lua.get_integer(1);
+        if (!session || token <= 0)
+        {
+            lua.set_bool(false);
+            return 1;
+        }
+        std::scoped_lock lock(active_mod->session_mutex_);
+        lua.set_bool(session->loop_start_callbacks.erase(static_cast<uint64_t>(token)) != 0);
+        return 1;
+    }
+
+    static std::optional<UE4SSLuaEventBridge::ObjectLifetimeIdentity> read_object_identity(
+        std::uintptr_t address)
+    {
+        if (!address || !RC::Unreal::IsInGameThread()) return {};
+        const auto read = [](const void* source, void* destination, std::size_t size) {
+            std::size_t copied{};
+            return source && ReadProcessMemory(
+                GetCurrentProcess(), source, destination, size, &copied) && copied == size;
+        };
+        int32_t index{};
+        if (!read(
+                reinterpret_cast<const void*>(
+                    address + RC::Unreal::FWeakObjectPtr::uobject_internal_index_offset),
+                &index,
+                sizeof(index)) || index < 0) return {};
+        const auto* item = RC::Unreal::FUObjectArray::IndexToObject(index);
+        if (!item) return {};
+        RC::Unreal::UObject* indexed_object{};
+        int32_t serial{};
+        const auto item_address = reinterpret_cast<std::uintptr_t>(item);
+        if (!read(reinterpret_cast<const void*>(item_address), &indexed_object, sizeof(indexed_object)) ||
+            !read(
+                reinterpret_cast<const void*>(
+                    item_address + RC::Unreal::FWeakObjectPtr::object_item_serial_offset),
+                &serial,
+                sizeof(serial)) ||
+            reinterpret_cast<std::uintptr_t>(indexed_object) != address || serial <= 0) return {};
+        return UE4SSLuaEventBridge::ObjectLifetimeIdentity{address, index, serial};
+    }
+
+    static std::optional<uint64_t> parse_token(std::string_view value)
+    {
+        uint64_t token{};
+        const auto parsed = std::from_chars(value.data(), value.data() + value.size(), token);
+        if (value.empty() || parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || token == 0)
+            return {};
+        return token;
+    }
+
+    static int lifetime_capture(const Lua& lua)
+    {
+        auto* session = consume_session(lua);
+        const auto address_value = lua.get_integer(1);
+        if (!session || !active_mod->listeners_registered_.load(std::memory_order_acquire))
+        {
+            lua.set_nil();
+            lua.set_string("object lifetime service is unavailable");
+            return 2;
+        }
+        const auto identity = address_value > 0
+            ? read_object_identity(static_cast<std::uintptr_t>(address_value))
+            : std::nullopt;
+        if (!identity)
+        {
+            lua.set_nil();
+            lua.set_string(RC::Unreal::IsInGameThread()
+                ? "address is not a live UObject"
+                : "lifetime capture must run on the Unreal game thread");
+            return 2;
+        }
+        const auto result = active_mod->lifetimes_.capture(session->id, *identity);
+        if (result.token == 0)
+        {
+            lua.set_nil();
+            lua.set_string(result.failure == UE4SSLuaEventBridge::LifecycleRegistry::CaptureFailure::capacity
+                ? "lifetime observation capacity exceeded"
+                : result.failure == UE4SSLuaEventBridge::LifecycleRegistry::CaptureFailure::faulted
+                    ? "lifetime notification overflow; reload the Lua session"
+                    : "Lua session is not registered or is stopping");
+            return 2;
+        }
+        const auto token = std::to_string(result.token);
+        lua.set_string(token);
+        return 1;
+    }
+
+    static int lifetime_valid(const Lua& lua)
+    {
+        auto* session = consume_session(lua);
+        const auto address_value = lua.get_integer(1);
+        const auto token = parse_token(lua.get_string(1));
+        if (!session || address_value <= 0 || !token ||
+            !active_mod->listeners_registered_.load(std::memory_order_acquire))
+        {
+            lua.set_bool(false);
+            return 1;
+        }
+        const auto identity = read_object_identity(static_cast<std::uintptr_t>(address_value));
+        lua.set_bool(identity && active_mod->lifetimes_.valid(session->id, *token, *identity));
+        return 1;
+    }
+
+    static int lifetime_take_lost(const Lua& lua)
+    {
+        auto* session = consume_session(lua);
+        if (!session || !RC::Unreal::IsInGameThread())
+        {
+            lua.set_nil();
+            lua.set_string(!session
+                ? "Lua session is not registered or is stopping"
+                : "lifetime loss draining must run on the Unreal game thread");
+            return 2;
+        }
+        const auto result = active_mod->lifetimes_.take_lost(session->id);
+        if (result.overflow)
+        {
+            lua.set_nil();
+            lua.set_string("lifetime notification overflow; discard cached objects and reload the Lua session");
+            return 2;
+        }
+        if (result.unknown_session)
+        {
+            lua.set_nil();
+            lua.set_string("Lua session is not registered or is stopping");
+            return 2;
+        }
+        if (!result.token)
+        {
+            lua.set_nil();
+            return 1;
+        }
+        const auto token = std::to_string(*result.token);
+        lua.set_string(token);
+        return 1;
     }
 
     static int target_delivery_operation(const Lua& lua, bool enable)

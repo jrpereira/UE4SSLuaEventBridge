@@ -50,8 +50,10 @@ bash tests/run-abi-syntax-test.sh
 ### Purpose
 
 Translate native Enhanced Input action events into Lua callbacks without
-installing `ProcessEvent` hooks, UObject listeners, scans, or key-state polling. Enhanced
-Input remains responsible for trigger evaluation and value generation.
+installing `ProcessEvent` hooks, object scans, or key-state polling. Enhanced
+Input remains responsible for trigger evaluation and value generation. A separate
+lifetime service uses UE4SS's native UObject create/delete listeners only to
+invalidate explicitly captured, session-owned observations; listeners never call Lua.
 Copied events are delivered through scheduled queue checks; see [dispatch limits and tuning](DEVELOPERS.md#dispatch-limits-and-tuning).
 
 The backend is game-agnostic. A caller supplies both the exact live
@@ -147,7 +149,7 @@ before retained Lua session storage is released.
 ### Deliberate exclusions
 
 - no player-controller or pawn discovery;
-- no UObject create/delete listener;
+- no listener-driven Lua callback or automatic object discovery;
 - no `ProcessEvent` hook;
 - no background component scanning or polling;
 - no automatic rebinding after component replacement; and
@@ -209,6 +211,8 @@ routing and absence of accumulated resources.
 | Thrown scope cleanup errors | An unexpected exception from one scope does not abandon healthy scopes; the failed scope remains retryable while Lua is alive. |
 | Public UnbindAll retries | Context failure, partial subscription failure, and bulk failure preserve retry ownership; captured callbacks stay disabled; later Close/UnbindAll releases all resources. |
 | Multiple scopes | Failure in one scope does not prevent cleanup of other scopes; remaining work is retried. |
+| Loop start | One-shot delivery, explicit cancellation, and callback release after delivery. |
+| Object lifetime Lua surface | Decimal token preservation, validation, and per-session loss draining. |
 
 ### Native queue ownership coverage
 

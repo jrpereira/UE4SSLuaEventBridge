@@ -94,7 +94,7 @@ __UE4SSLuaEventBridge_SessionId = 17
 
 function UE4SSLuaEventBridge_GetVersion() return "0.3.3" end
 function UE4SSLuaEventBridge_GetCapabilities()
-    return 4, true, true, true, true, true, true, true, true, "97b7e501", true, true
+    return 5, true, true, true, true, true, true, true, true, "97b7e501", true, true, true, true
 end
 function UE4SSLuaEventBridge_InspectInputComponent(session, target)
     expect(session == 17)
@@ -154,10 +154,12 @@ local bridge = UE4SSLuaEventBridge
 local Helpers = bridge.Helpers
 local Trigger = Helpers.Trigger
 
-expect(bridge.API_VERSION == 4)
+expect(bridge.API_VERSION == 5)
 expect(bridge.GetCapabilities().helpers == true)
 expect(bridge.GetCapabilities().detailed_errors == true)
 expect(bridge.GetCapabilities().debug_tracing == true)
+expect(bridge.GetCapabilities().loop_start == true)
+expect(bridge.GetCapabilities().object_lifetimes == true)
 
 local invalidTarget, invalidTargetError = bridge.CloseInputComponent("bad")
 expect(not invalidTarget and string.find(invalidTargetError, "positive integer", 1, true))

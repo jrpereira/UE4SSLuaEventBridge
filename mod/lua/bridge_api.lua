@@ -4,6 +4,7 @@ __UE4SSLuaEventBridge_SessionId = nil
 local __callbacks = {}
 local __bindings = {}
 local __targetFaultHandlers = {}
+local __loopStartCallbacks = {}
 local __nextCallbackToken = 0
 
 local function __forget(handle)
@@ -30,6 +31,7 @@ local function __clearCallbacks()
     __callbacks = {}
     __bindings = {}
     __targetFaultHandlers = {}
+    __loopStartCallbacks = {}
 end
 
 local function __traceback(message)
@@ -47,6 +49,14 @@ local function __dispatch(
         __targetFaultHandlers[handle] = nil -- One notification, even if handler throws.
         __forgetTarget(handle)
         if handler ~= nil then handler({target = handle, reason = sourceAction}) end
+        return
+    end
+    if token == -2 then
+        local callback = __loopStartCallbacks[handle]
+        __loopStartCallbacks[handle] = nil
+        if callback == nil then return end
+        local ok, callbackError = xpcall(callback, __traceback)
+        if not ok then error(callbackError, 0) end
         return
     end
     if token == 0 then
@@ -149,7 +159,7 @@ local function __bindAction(targetHandle, action, event, callback, trace)
 end
 
 local bridge = {
-    API_VERSION = 4,
+    API_VERSION = 5,
     GetVersion = UE4SSLuaEventBridge_GetVersion,
     GetDispatchStats = function()
         local queued, highWater, rejected, tracesRejected = UE4SSLuaEventBridge_GetDispatchStats()
@@ -159,7 +169,8 @@ local bridge = {
     end,
     GetCapabilities = function()
         local api, enhancedInput, explicitTarget, helpers, dynamicInput,
-            triggerTap, triggerHold, detailedErrors, debugTracing, target, bindingSnapshot, targetDeliveryFaults =
+            triggerTap, triggerHold, detailedErrors, debugTracing, target, bindingSnapshot,
+            targetDeliveryFaults, loopStart, objectLifetimes =
             UE4SSLuaEventBridge_GetCapabilities()
         return {
             api = api,
@@ -174,6 +185,8 @@ local bridge = {
             target_ue4ss_commit = target,
             binding_snapshot = bindingSnapshot == true,
             target_delivery_faults = targetDeliveryFaults == true,
+            loop_start = loopStart == true,
+            object_lifetimes = objectLifetimes == true,
         }
     end,
     SetTargetDeliveryFaultHandler = function(target, callback)
@@ -227,6 +240,38 @@ local bridge = {
             __forget(handle)
         end
         return removed, unbindError
+    end,
+}
+
+bridge.onLoopStart = function(callback)
+    if type(callback) ~= "function" then error("callback must be a function", 2) end
+    __nextCallbackToken = __nextCallbackToken + 1
+    local token = __nextCallbackToken
+    __loopStartCallbacks[token] = callback
+    local registered, why = UE4SSLuaEventBridge_RegisterLoopStart(__session, token)
+    if not registered then
+        __loopStartCallbacks[token] = nil
+        error(why or "failed to register loop-start callback", 2)
+    end
+    return function()
+        if __loopStartCallbacks[token] == nil then return false end
+        __loopStartCallbacks[token] = nil
+        return UE4SSLuaEventBridge_CancelLoopStart(__session, token) == true
+    end
+end
+
+bridge.lifetimes = {
+    capture = function(address)
+        if not __positiveInteger(address) then return nil, "address must be a positive integer" end
+        return UE4SSLuaEventBridge_LifetimeCapture(__session, address)
+    end,
+    valid = function(address, token)
+        if not __positiveInteger(address) or type(token) ~= "string" or
+            token:match("^[1-9][0-9]*$") == nil then return false end
+        return UE4SSLuaEventBridge_LifetimeValid(__session, address, token) == true
+    end,
+    takeLost = function()
+        return UE4SSLuaEventBridge_LifetimeTakeLost(__session)
     end,
 }
 

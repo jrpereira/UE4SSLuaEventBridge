@@ -5,7 +5,14 @@
 - Consolidate API, lifecycle, diagnostics, and build documentation.
 - Correct queue-statistics documentation and include current capability fields.
 - Extract version-specific release notes from the changelog.
-- Add project metadata. Native API behavior is unchanged.
+- Add project metadata.
+- Add per-session one-shot loop-start callbacks delivered before the input queue
+  rate gate.
+- Add session-isolated, non-owning UObject lifetime tokens with native
+  create/delete invalidation, bounded loss queues, and fail-closed overflow.
+
+API compatibility is version 5. The lifecycle APIs are additive and advertised
+through `GetCapabilities()`.
 
 Changes and compatibility notes for each version.
 

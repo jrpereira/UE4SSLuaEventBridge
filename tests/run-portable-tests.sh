@@ -25,3 +25,6 @@ c++ -std=c++20 -Wall -Wextra -Werror -pthread -Imod/include tests/QueueBuffersTe
 
 c++ -std=c++20 -Wall -Wextra -Werror -Imod/include tests/QueueDispatchScheduleTests.cpp -o /tmp/ue4ss-queue-schedule-tests
 /tmp/ue4ss-queue-schedule-tests
+
+c++ -std=c++20 -Wall -Wextra -Werror -pthread -Imod/include tests/LifecycleRegistryTests.cpp -o /tmp/ue4ss-lifecycle-registry-tests
+/tmp/ue4ss-lifecycle-registry-tests
