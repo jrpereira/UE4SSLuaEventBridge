@@ -10,8 +10,10 @@ class WorkflowRuntimeTests(unittest.TestCase):
         workflows = list((ROOT / '.github/workflows').glob('*.yml'))
         combined = '\n'.join(path.read_text() for path in workflows)
         self.assertNotIn('actions/checkout@v4', combined)
+        self.assertNotIn('actions/setup-python@v5', combined)
         self.assertNotIn('ilammy/msvc-dev-cmd', combined)
         self.assertIn('actions/checkout@v6', combined)
+        self.assertIn('actions/setup-python@v6', combined)
 
         native_script = (ROOT / 'tools/ci-windows-native.ps1').read_text()
         self.assertIn('vswhere.exe', native_script)
