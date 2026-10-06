@@ -35,7 +35,7 @@ def version(root):
 NATIVE_TEST_TARGETS = [
     'SessionAliasIndexTests', 'BindingSnapshotTests', 'WeakObjectPtrTests',
     'QueueBuffersTests', 'QueueDispatchScheduleTests', 'DispatchBudgetTests',
-    'NativeBackendLifecycleTests', 'LegacyInstallMigrationTests', 'BootstrapSelectionTests',
+    'NativeBackendLifecycleTests', 'BootstrapSelectionTests',
 ]
 LUA_TEST_SUITES = ['tests/LuaHelperTests.lua', 'tests/LifecycleIntegrationTests.lua']
 
@@ -76,13 +76,13 @@ def build(root, output, runner=subprocess.run, lua_executable=None):
         runner(command, check=True, cwd=root)
     if sources(root) != before:
         raise RuntimeError('Source changed during build; no candidate manifest produced')
-    staged = output/'dist/_ModCore_UE4SSLuaEventBridge'
+    staged = output/'dist/0_ModCore_UE4SSLuaEventBridge'
     paths = ['dlls/main.dll', 'dlls/main.json',
              f'dlls/versions/UE4SSLuaEventBridge-{value}.dll', 'enabled.txt']
     files = {p:digest(staged/p) for p in paths}
     if any(value is None for value in files.values()):
         raise RuntimeError('Native build did not produce the complete Windows DLL payload')
-    manifest = {'module':'_ModCore_UE4SSLuaEventBridge','version':value,'files':files,
+    manifest = {'module':'0_ModCore_UE4SSLuaEventBridge','version':value,'files':files,
                 'native_provenance':{'source_files':before,'configuration':'Release',
                                      'experimental_component_layout':False,'tests_passed':True,
                                      'test_configuration':'Debug',
@@ -98,7 +98,7 @@ def validate(manifest, root):
     value = manifest.get('version')
     expected = {'dlls/main.dll', 'dlls/main.json',
                 f'dlls/versions/UE4SSLuaEventBridge-{value}.dll', 'enabled.txt'}
-    if manifest.get('module') != '_ModCore_UE4SSLuaEventBridge' or set(manifest.get('files',{})) != expected:
+    if manifest.get('module') != '0_ModCore_UE4SSLuaEventBridge' or set(manifest.get('files',{})) != expected:
         raise ValueError('Unexpected native candidate payload')
     if provenance.get('configuration') != 'Release' or provenance.get('experimental_component_layout') is not False or provenance.get('tests_passed') is not True:
         raise ValueError('Candidate lacks a verified production build record; rebuild with native_candidate.py')

@@ -28,7 +28,7 @@ try {
             finally {$hasher.Dispose();$stream.Dispose()}
             if($hash -ne $file.sha256){throw 'Manifest hash mismatch'}
         }
-        if($zip.GetEntry('_ModCore_UE4SSLuaEventBridge/personal-config.json')){throw 'Personal configuration shipped'}
+        if($zip.GetEntry('0_ModCore_UE4SSLuaEventBridge/personal-config.json')){throw 'Personal configuration shipped'}
     } finally {$zip.Dispose()}
     $rejected=$false
     try { & $packager -Distribution $distribution -OutputDirectory (Join-Path $fixture 'out') -SourceCommit ('a'*40) -AllowNonPeTestFixture|Out-Null }
@@ -44,7 +44,7 @@ try {
 
     $validator=Join-Path $repo 'tools/test-release-archive.ps1'
     & $validator -Archive $result.archive
-    foreach($forbidden in @('Tools/a.txt','_ModCore_UE4SSLuaEventBridge/tOoLs/a.txt','_ModCore_UE4SSLuaEventBridge/x/TOOLS/','_ModCore_UE4SSLuaEventBridge\Tools\a.txt')){
+    foreach($forbidden in @('Tools/a.txt','0_ModCore_UE4SSLuaEventBridge/tOoLs/a.txt','0_ModCore_UE4SSLuaEventBridge/x/TOOLS/','0_ModCore_UE4SSLuaEventBridge\Tools\a.txt')){
         $bad=Join-Path $fixture ([guid]::NewGuid().ToString('N')+'.zip')
         Copy-Item -LiteralPath $result.archive -Destination $bad
         $zip=[IO.Compression.ZipFile]::Open($bad,[IO.Compression.ZipArchiveMode]::Update)

@@ -33,13 +33,13 @@ if(WIN32)
     set_target_properties(UE4SSLEBBootstrap PROPERTIES
         OUTPUT_NAME main
         PREFIX ""
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/dist/_ModCore_UE4SSLuaEventBridge/dlls"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/dist/0_ModCore_UE4SSLuaEventBridge/dlls"
     )
     add_custom_command(TARGET UE4SSLEBBootstrap POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_CURRENT_BINARY_DIR}/main.json"
-            "${CMAKE_BINARY_DIR}/dist/_ModCore_UE4SSLuaEventBridge/dlls/main.json"
+            "${CMAKE_BINARY_DIR}/dist/0_ModCore_UE4SSLuaEventBridge/dlls/main.json"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${UE4SSLEB_REPO_ROOT}/packaging/enabled.txt"
-            "${CMAKE_BINARY_DIR}/dist/_ModCore_UE4SSLuaEventBridge/enabled.txt"
+            "${CMAKE_BINARY_DIR}/dist/0_ModCore_UE4SSLuaEventBridge/enabled.txt"
     )
 endif()
 

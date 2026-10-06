@@ -4,6 +4,11 @@
 
 ### Changes
 
+- Package the mod folder as `0_ModCore_UE4SSLuaEventBridge`, matching the
+  numbered ModCore folders so the bridge sorts before the mods that use it.
+  Rename an existing `_ModCore_UE4SSLuaEventBridge` folder and its `mods.txt`
+  entry when upgrading.
+- Remove the boot-time retirement of a legacy `UE4SSLuaEventBridge` folder.
 - Probe the UObject layout once, at Unreal initialization, instead of retrying
   from the game thread. A failed probe is a layout mismatch that a retry would
   not change, and a successful retry registered object-array listeners

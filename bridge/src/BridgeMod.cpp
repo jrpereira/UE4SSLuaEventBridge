@@ -6,7 +6,6 @@
 #include <Version.hpp>
 #include <DispatchBudget.hpp>
 #include <DispatchBacklog.hpp>
-#include <LegacyInstallMigration.hpp>
 #include <LifecycleRegistry.hpp>
 #include <LifetimeProbe.hpp>
 #include <ImplementationABI.h>
@@ -35,11 +34,6 @@ extern "C" __declspec(dllimport) int UE4SSLEB_WINAPI GetModuleHandleExW(
     unsigned long flags,
     const wchar_t* module_address,
     void** module);
-
-extern "C" __declspec(dllimport) unsigned long UE4SSLEB_WINAPI GetModuleFileNameW(
-    void* module,
-    wchar_t* filename,
-    unsigned long size);
 
 extern "C" __declspec(dllimport) unsigned long UE4SSLEB_WINAPI GetEnvironmentVariableA(
     const char* name, char* buffer, unsigned long size);
@@ -129,40 +123,6 @@ bool pin_current_module()
     return pinned;
 }
 
-std::filesystem::path current_module_file()
-{
-    constexpr unsigned long from_address = 0x00000004UL;
-    constexpr unsigned long unchanged_reference_count = 0x00000002UL;
-    void* module{};
-    if (GetModuleHandleExW(
-            from_address | unchanged_reference_count,
-            reinterpret_cast<const wchar_t*>(&active_mod),
-            &module) == 0)
-    {
-        return {};
-    }
-
-    std::array<wchar_t, 32768> path{};
-    const auto length = GetModuleFileNameW(module, path.data(), static_cast<unsigned long>(path.size()));
-    if (length == 0 || static_cast<std::size_t>(length) >= path.size()) return {};
-    return std::filesystem::path(std::wstring(path.data(), length));
-}
-
-void migrate_legacy_install_on_boot()
-{
-    const auto module_file = current_module_file();
-    if (module_file.empty())
-    {
-        report("Unable to locate module for legacy-folder migration");
-        return;
-    }
-    const auto result = UE4SSLuaEventBridge::migrate_legacy_install(module_file);
-    if (result == UE4SSLuaEventBridge::LegacyInstallMigrationResult::failed)
-    {
-        report("Legacy-folder migration failed");
-    }
-}
-
 
 bool decode_packed_text(
     const Lua& lua,
@@ -228,7 +188,6 @@ public:
         ModAuthors = L"UE4SS Lua Event Bridge contributors";
         ModIntendedSDKVersion = L"3.0.1-97b7e501";
         active_mod = this;
-        migrate_legacy_install_on_boot();
     }
 
     ~UE4SSLuaEventBridgeMod() override

@@ -29,9 +29,9 @@ cmake --build build
 Expected output:
 
 ```text
-build\dist\_ModCore_UE4SSLuaEventBridge\dlls\main.dll
-build\dist\_ModCore_UE4SSLuaEventBridge\dlls\main.json
-build\dist\_ModCore_UE4SSLuaEventBridge\dlls\versions\UE4SSLuaEventBridge-1.0.9.dll
+build\dist\0_ModCore_UE4SSLuaEventBridge\dlls\main.dll
+build\dist\0_ModCore_UE4SSLuaEventBridge\dlls\main.json
+build\dist\0_ModCore_UE4SSLuaEventBridge\dlls\versions\UE4SSLuaEventBridge-1.0.9.dll
 ```
 
 The repository contains two CMake projects. `bootstrap` builds `main.dll` with
@@ -44,7 +44,7 @@ checked without loading either module:
 
 ```powershell
 ./tools/test-dll-version.ps1 `
-  -Dll build/dist/_ModCore_UE4SSLuaEventBridge/dlls/main.dll `
+  -Dll build/dist/0_ModCore_UE4SSLuaEventBridge/dlls/main.dll `
   -ExpectedProductName 'UE4SSLuaEventBridge Bootstrap' `
   -ExpectedOriginalFilename 'main.dll'
 ```

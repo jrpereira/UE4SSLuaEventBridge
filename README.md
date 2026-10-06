@@ -30,7 +30,7 @@ Extract the ZIP into the UE4SS `Mods` directory to produce:
 
 ```text
 Mods/
-└── _ModCore_UE4SSLuaEventBridge/
+└── 0_ModCore_UE4SSLuaEventBridge/
     ├── dlls/
     │   ├── main.dll
     │   ├── main.json
@@ -52,21 +52,14 @@ For deterministic startup before Lua mods that consume the bridge, add this as
 the first mod entry in `Mods/mods.txt`:
 
 ```text
-_ModCore_UE4SSLuaEventBridge : 1
+0_ModCore_UE4SSLuaEventBridge : 1
 ```
 
 The packaged `enabled.txt` marker also enables the bridge, but UE4SS loads marker
 enabled mods in a separate pass with no defined ordering. A `mods.txt` entry is
 therefore preferred when another mod needs the bridge during its Lua-state setup.
 
-When upgrading, rename `_UE4SSLuaEventBridge` to
-`_ModCore_UE4SSLuaEventBridge` and update its existing `mods.txt` entry.
 Keep only one active bridge installation.
-
-On first boot from the ModCore folder, the bridge retires a sibling legacy
-`UE4SSLuaEventBridge` installation. When the old folder has no `deprecated.txt`,
-the bridge removes its `enabled.txt` marker and writes `deprecated.txt` containing
-`_ModCore_UE4SSLuaEventBridge`.
 
 ## Minimal Lua example
 

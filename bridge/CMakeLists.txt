@@ -70,12 +70,12 @@ if(WIN32)
     set_target_properties(UE4SSLuaEventBridgeImplementation PROPERTIES
         OUTPUT_NAME "UE4SSLuaEventBridge-${UE4SSLEB_PRODUCT_VERSION}"
         PREFIX ""
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/dist/_ModCore_UE4SSLuaEventBridge/dlls/versions")
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/dist/0_ModCore_UE4SSLuaEventBridge/dlls/versions")
 endif()
 
 if(UE4SSLEB_BUILD_TESTS)
     set(UE4SSLEB_TEST_ROOT "${UE4SSLEB_REPO_ROOT}/tests")
-    foreach(test IN ITEMS DispatchBudget QueueDispatchSchedule WeakObjectPtr BindingSnapshot LegacyInstallMigration)
+    foreach(test IN ITEMS DispatchBudget QueueDispatchSchedule WeakObjectPtr BindingSnapshot)
         add_executable(${test}Tests "${UE4SSLEB_TEST_ROOT}/${test}Tests.cpp")
         target_compile_features(${test}Tests PRIVATE cxx_std_20)
         target_include_directories(${test}Tests PRIVATE include "${UE4SSLEB_REPO_ROOT}/contract")

@@ -25,7 +25,7 @@ class NativeCandidateTests(unittest.TestCase):
     def runner(self, output):
         def run(command, **kwargs):
             if command[:3] == ['cmake','--build',str(output)]:
-                staged = output/'dist/_ModCore_UE4SSLuaEventBridge'
+                staged = output/'dist/0_ModCore_UE4SSLuaEventBridge'
                 (staged/'dlls/versions').mkdir(parents=True)
                 (staged/'dlls/main.dll').write_bytes(b'fixture dll')
                 (staged/'dlls/main.json').write_text('{"schema":1,"version":"1.2.3"}')
@@ -43,7 +43,7 @@ class NativeCandidateTests(unittest.TestCase):
             (root/'tests/__pycache__').mkdir(parents=True)
             (root/'tests/__pycache__/cached.pyc').write_bytes(b'generated cache')
             self.assertEqual(native.validate(manifest,root), [])
-            staged = output/'dist/_ModCore_UE4SSLuaEventBridge'
+            staged = output/'dist/0_ModCore_UE4SSLuaEventBridge'
             result = inspect_candidate(manifest,staged,staged,root)
             self.assertFalse(result['needs_attention'])
             (root/'bridge/new.hpp').write_text('new header')

@@ -40,14 +40,14 @@ jobs:
         shell: pwsh
         run: |
           $metadata = & ./tools/release-metadata.ps1
-          ./tools/test-dll-version.ps1 -Dll build/dist/_ModCore_UE4SSLuaEventBridge/dlls/main.dll -ExpectedProductName 'UE4SSLuaEventBridge Bootstrap' -ExpectedOriginalFilename 'main.dll'
-          ./tools/test-dll-version.ps1 -Dll "build/dist/_ModCore_UE4SSLuaEventBridge/dlls/versions/UE4SSLuaEventBridge-$($metadata.version).dll" -ExpectedOriginalFilename "UE4SSLuaEventBridge-$($metadata.version).dll"
+          ./tools/test-dll-version.ps1 -Dll build/dist/0_ModCore_UE4SSLuaEventBridge/dlls/main.dll -ExpectedProductName 'UE4SSLuaEventBridge Bootstrap' -ExpectedOriginalFilename 'main.dll'
+          ./tools/test-dll-version.ps1 -Dll "build/dist/0_ModCore_UE4SSLuaEventBridge/dlls/versions/UE4SSLuaEventBridge-$($metadata.version).dll" -ExpectedOriginalFilename "UE4SSLuaEventBridge-$($metadata.version).dll"
       - name: Package
         id: metadata
         shell: pwsh
         run: |
           $metadata = & ./tools/release-metadata.ps1 -OutputFile $env:GITHUB_OUTPUT
-          & ./tools/package-release.ps1 -Distribution build/dist/_ModCore_UE4SSLuaEventBridge -OutputDirectory . -SourceCommit $env:GITHUB_SHA
+          & ./tools/package-release.ps1 -Distribution build/dist/0_ModCore_UE4SSLuaEventBridge -OutputDirectory . -SourceCommit $env:GITHUB_SHA
       - uses: actions/upload-artifact@v4
         with:
           name: UE4SSLuaEventBridge-${{ steps.metadata.outputs.tag }}

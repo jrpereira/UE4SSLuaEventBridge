@@ -14,9 +14,6 @@ c++ -std=c++20 -Wall -Wextra -Werror -pthread \
 c++ -std=c++20 -Wall -Wextra -Werror -Ibridge/include -Icontract tests/BindingSnapshotTests.cpp -o /tmp/ue4ss-binding-snapshot-tests
 /tmp/ue4ss-binding-snapshot-tests
 
-c++ -std=c++20 -Wall -Wextra -Werror -Ibridge/include -Icontract tests/LegacyInstallMigrationTests.cpp -o /tmp/ue4ss-legacy-install-migration-tests
-/tmp/ue4ss-legacy-install-migration-tests
-
 c++ -std=c++20 -Wall -Wextra -Werror -Ibridge/include -Icontract tests/WeakObjectPtrTests.cpp -o /tmp/ue4ss-weak-object-tests
 /tmp/ue4ss-weak-object-tests
 
