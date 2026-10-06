@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## v1.0.11
 
-### Fixes
+### Changes
 
 - Probe the UObject layout by walking the start of the object array by index
   instead of looking up `Class` objects by name. On Dawnwalker the name lookup
