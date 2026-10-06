@@ -31,7 +31,7 @@ Expected output:
 ```text
 build\dist\_ModCore_UE4SSLuaEventBridge\dlls\main.dll
 build\dist\_ModCore_UE4SSLuaEventBridge\dlls\main.json
-build\dist\_ModCore_UE4SSLuaEventBridge\dlls\versions\UE4SSLuaEventBridge-1.0.8.dll
+build\dist\_ModCore_UE4SSLuaEventBridge\dlls\versions\UE4SSLuaEventBridge-1.0.9.dll
 ```
 
 The repository contains two CMake projects. `bootstrap` builds `main.dll` with
