@@ -29,5 +29,8 @@ c++ -std=c++20 -Wall -Wextra -Werror -Ibridge/include -Icontract tests/QueueDisp
 c++ -std=c++20 -Wall -Wextra -Werror -pthread -Ibridge/include -Icontract tests/LifecycleRegistryTests.cpp -o /tmp/ue4ss-lifecycle-registry-tests
 /tmp/ue4ss-lifecycle-registry-tests
 
+c++ -std=c++20 -Wall -Wextra -Werror -pthread -Ibridge/include -Icontract tests/LifetimeProbeTests.cpp -o /tmp/ue4ss-lifetime-probe-tests
+/tmp/ue4ss-lifetime-probe-tests
+
 c++ -std=c++20 -Wall -Wextra -Werror -Ibootstrap/include bootstrap/tests/BootstrapSelectionTests.cpp -o /tmp/ue4ss-bootstrap-selection-tests
 /tmp/ue4ss-bootstrap-selection-tests

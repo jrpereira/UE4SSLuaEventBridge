@@ -27,6 +27,12 @@ namespace GUI
 class GUITab;
 }
 
+namespace Output
+{
+// Writes to UE4SS's default output devices, including UE4SS.log.
+UE4SS_IMPORT void send(StringViewType content);
+}
+
 namespace LuaMadeSimple
 {
 class Lua

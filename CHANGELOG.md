@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+- Add `lifetimes.weak(object)` handles. `get()` returns the wrapper only while
+  its native lifetime is valid, so a wrapper kept past garbage collection is
+  never dereferenced; off the game thread it fails without forgetting the
+  object. Advertised as `weak_handles`.
+- Make loss reporting opt-in per session through `lifetimes.reportLosses()` or
+  the first `takeLost()` call. Sessions that never drain losses can no longer
+  overflow the loss queue and fault their validations. Advertised as
+  `loss_opt_in`.
+- Retry a failed UObject layout probe from the game thread, at most once per
+  second and ten times in all, instead of disabling lifetimes for the process.
+- Report why lifetimes are unavailable in
+  `GetCapabilities().object_lifetimes_reason`.
+- Index lifetime observations by object address and index, with an empty-set
+  fast path, so object-array listeners stay cheap as observations grow.
+- Reference-count lifetime observations. `lifetimes.release(token)` and weak
+  handle `release()` or collection end an observation without a reported loss
+  once no capture holds it.
+- Write native diagnostics to UE4SS.log as well as the debugger: probe outcome,
+  legacy-folder migration, Lua-stop cleanup, loop-start and delivery-fault
+  handler failures.
+
+API compatibility is version 6. Losses that occur before a session opts in are
+not reported; call `reportLosses()` at startup to receive all of them.
+
 ## v1.0.7
 
 - Consolidate API, lifecycle, diagnostics, and build documentation.

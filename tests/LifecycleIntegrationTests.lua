@@ -14,7 +14,7 @@ local function fixture()
     local f = {
         gameThread = true, contexts = {}, bindings = {}, targets = {},
         nextId = 0, nextSession = 0, removeFailures = 0, unbindFailures = 0,
-        removals = 0, mutations = 0, componentAlive = true,
+        removals = 0, mutations = 0, componentAlive = true, dead = {},
     }
     function f:id() self.nextId = self.nextId + 1; return self.nextId end
     function f:mutate()
@@ -49,7 +49,7 @@ local function fixture()
     end
     function f:loadSession()
         self.nextSession = self.nextSession + 1
-        local session = { id = self.nextSession }
+        local session = { id = self.nextSession, lost = {}, references = {} }
         local env = setmetatable({ __UE4SSLuaEventBridge_SessionId = session.id }, { __index = _G })
         env.FName = function(s) return s end
         env.StaticFindObject = function(path)
@@ -71,7 +71,9 @@ local function fixture()
         local function own(id) check(id == session.id, "cross-session native call") end
         env.UE4SSLuaEventBridge_GetVersion = function() return "test-fixture" end
         env.UE4SSLuaEventBridge_GetCapabilities = function()
-            return 5, true, true, true, true, true, true, true, true, "fixture", true, true, true, true
+            local ready = self.lifetimesReason == nil
+            return 6, true, true, true, true, true, true, true, true, "fixture", true, true, true, ready,
+                self.lifetimesReason
         end
         env.UE4SSLuaEventBridge_RegisterLoopStart = function(id, token)
             own(id)
@@ -86,17 +88,38 @@ local function fixture()
         end
         env.UE4SSLuaEventBridge_LifetimeCapture = function(id, address)
             own(id)
-            return tostring(address + 1000)
+            local token = tostring(address + 1000)
+            session.references[token] = (session.references[token] or 0) + 1
+            return token
+        end
+        env.UE4SSLuaEventBridge_LifetimeRelease = function(id, token)
+            own(id)
+            local count = session.references[token]
+            if not count then return false end
+            session.references[token] = count > 1 and count - 1 or nil
+            return true
         end
         env.UE4SSLuaEventBridge_LifetimeValid = function(id, address, token)
             own(id)
-            return token == tostring(address + 1000)
+            if not self.gameThread or session.faulted then return false end
+            return not self.dead[address] and token == tostring(address + 1000)
         end
         env.UE4SSLuaEventBridge_LifetimeTakeLost = function(id)
             own(id)
-            local token = session.lostToken
+            if session.faulted then return nil, "lifetime notification overflow; reload" end
+            session.reporting = true
+            local token = session.lostToken or table.remove(session.lost, 1)
             session.lostToken = nil
             return token
+        end
+        env.UE4SSLuaEventBridge_LifetimeReportLosses = function(id)
+            own(id)
+            session.reporting = true
+            return true
+        end
+        -- Native losses are queued only for sessions that opted in.
+        function session:lose(token)
+            if self.reporting then self.lost[#self.lost + 1] = token end
         end
         env.UE4SSLuaEventBridge_IsInGameThread = function() return self.gameThread end
         env.UE4SSLuaEventBridge_TraceScope = function() end
@@ -210,6 +233,120 @@ cases["lifetime wrapper preserves decimal tokens and drains losses"] = function(
     check(not s.api.lifetimes.valid(4096, "05096"), "noncanonical token accepted")
     s.lostToken = token
     check(s.api.lifetimes.takeLost() == token and s.api.lifetimes.takeLost() == nil)
+end
+
+-- A wrapper kept past garbage collection (a save loaded from a running game)
+-- must never be dereferenced; the weak handle's lifetime check rejects it first.
+local function trackedObject(address)
+    local o = { address = address, freed = false, reads = 0 }
+    function o:IsValid()
+        if self.freed then self.reads = self.reads + 1; error("freed object memory read") end
+        return true
+    end
+    function o:GetAddress()
+        if self.freed then self.reads = self.reads + 1; error("freed object memory read") end
+        return self.address
+    end
+    return o
+end
+
+cases["weak handle returns its wrapper only while the object lives"] = function()
+    local f = fixture()
+    local s = f:loadSession()
+    local o = trackedObject(700)
+    local handle = check(s.api.lifetimes.weak(o))
+    check(handle:get() == o, "live object not returned")
+    local token, address = handle:identity()
+    check(token == "1700" and address == 700, "identity does not expose the captured lifetime")
+    f.dead[700], o.freed = true, true
+    check(handle:get() == nil and o.reads == 0, "freed object was read")
+    f.dead[700] = nil
+    check(handle:get() == nil, "a lost handle must stay lost")
+    check(handle:identity() == "1700", "identity survives loss")
+    check(getmetatable(handle) == false, "handle internals must be private")
+end
+
+cases["weak handle keeps its wrapper when read off the game thread"] = function()
+    local f = fixture()
+    local s = f:loadSession()
+    local o = trackedObject(701)
+    f.gameThread = false
+    local none, why = s.api.lifetimes.weak(o)
+    check(none == nil and why:find("game thread", 1, true), "off-thread creation must fail")
+    f.gameThread = true
+    local handle = check(s.api.lifetimes.weak(o))
+    f.gameThread = false
+    local value, readWhy = handle:get()
+    check(value == nil and readWhy:find("game thread", 1, true), "off-thread read must fail")
+    f.gameThread = true
+    check(handle:get() == o, "an off-thread read must not forget a live object")
+    handle:release()
+    check(handle:get() == nil, "release forgets the wrapper")
+end
+
+cases["weak handles return their observation when released or collected"] = function()
+    local f = fixture()
+    local s = f:loadSession()
+    local o = trackedObject(705)
+    local first = check(s.api.lifetimes.weak(o))
+    local second = check(s.api.lifetimes.weak(o))
+    check(s.references["1705"] == 2, "handles for one object share an observation")
+    first:release()
+    first:release()
+    check(s.references["1705"] == 1, "release returns one share, once")
+    check(second:get() == o, "other handles keep the observation")
+    second = nil
+    collectgarbage(); collectgarbage()
+    check(s.references["1705"] == nil, "a collected handle returns its share")
+    check(s.api.lifetimes.release("bad") == false)
+    local token = check(s.api.lifetimes.captureObject(o))
+    check(s.api.lifetimes.release(token) and not s.api.lifetimes.release(token))
+end
+
+cases["weak handle creation rejects dead wrappers"] = function()
+    local f = fixture()
+    local s = f:loadSession()
+    local none, why = s.api.lifetimes.weak({ IsValid = function() return false end })
+    check(none == nil and why:find("live UE4SS UObject wrapper", 1, true))
+    none, why = s.api.lifetimes.weak(nil)
+    check(none == nil and why:find("live UE4SS UObject wrapper", 1, true))
+end
+
+cases["losses are reported only after the session opts in"] = function()
+    local f = fixture()
+    local s = f:loadSession()
+    local handle = check(s.api.lifetimes.weak(trackedObject(702)))
+    s:lose("11")
+    check(s.api.lifetimes.takeLost() == nil, "losses before opting in must not be queued")
+    s:lose("12")
+    check(s.api.lifetimes.takeLost() == "12", "takeLost opts the session in")
+    local other = f:loadSession()
+    check(other.api.lifetimes.reportLosses() == true)
+    other:lose("13")
+    check(other.api.lifetimes.takeLost() == "13", "reportLosses opts the session in")
+    check(handle:get() ~= nil, "loss reporting does not affect live handles")
+end
+
+cases["capabilities explain unavailable lifetimes"] = function()
+    local f = fixture()
+    local s = f:loadSession()
+    local caps = s.api.GetCapabilities()
+    check(caps.api == 6 and caps.object_lifetimes and caps.weak_handles and caps.loss_opt_in)
+    check(caps.object_lifetimes_reason == nil, "an available service has no reason")
+    f.lifetimesReason = "the UObject layout probe verified 0 of 40 classes (2 required); retrying"
+    caps = s.api.GetCapabilities()
+    check(not caps.object_lifetimes and not caps.weak_handles and not caps.loss_opt_in)
+    check(caps.object_lifetimes_reason == f.lifetimesReason, "reason not exposed")
+end
+
+cases["native lifetime fault invalidates weak handles and is reported"] = function()
+    local f = fixture()
+    local s = f:loadSession()
+    local handle = check(s.api.lifetimes.weak(trackedObject(704)))
+    s.faulted = true
+    check(handle:get() == nil, "a faulted service must not vouch for objects")
+    local none, why = s.api.lifetimes.takeLost()
+    check(none == nil and why:find("overflow", 1, true))
 end
 
 cases["off-thread helper shutdown refuses mutation and permits retry"] = function()

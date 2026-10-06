@@ -8,6 +8,7 @@
 #include <DispatchBacklog.hpp>
 #include <LegacyInstallMigration.hpp>
 #include <LifecycleRegistry.hpp>
+#include <LifetimeProbe.hpp>
 #include <ImplementationABI.h>
 
 #include <array>
@@ -76,6 +77,26 @@ constexpr int32_t packed_debug_max_length = packed_debug_word_count * 8;
 class UE4SSLuaEventBridgeMod;
 UE4SSLuaEventBridgeMod* active_mod{};
 
+// Reports one diagnostic line to UE4SS.log and to an attached debugger.
+void report(std::string_view message, std::string_view detail = {})
+{
+    std::string line{"[UE4SSLuaEventBridge] "};
+    line.append(message);
+    line.append(detail);
+    line.push_back('\n');
+    OutputDebugStringA(line.c_str());
+    try
+    {
+        std::wstring wide;
+        wide.reserve(line.size());
+        for (const char c : line) wide.push_back(static_cast<wchar_t>(static_cast<unsigned char>(c)));
+        RC::Output::send(wide);
+    }
+    catch (...)
+    {
+    }
+}
+
 uint32_t configured_queue_check_rate()
 {
     std::array<char, 32> value{};
@@ -132,13 +153,13 @@ void migrate_legacy_install_on_boot()
     const auto module_file = current_module_file();
     if (module_file.empty())
     {
-        OutputDebugStringA("[UE4SSLuaEventBridge] Unable to locate module for legacy-folder migration\n");
+        report("Unable to locate module for legacy-folder migration");
         return;
     }
     const auto result = UE4SSLuaEventBridge::migrate_legacy_install(module_file);
     if (result == UE4SSLuaEventBridge::LegacyInstallMigrationResult::failed)
     {
-        OutputDebugStringA("[UE4SSLuaEventBridge] Legacy-folder migration failed\n");
+        report("Legacy-folder migration failed");
     }
 }
 
@@ -226,19 +247,9 @@ public:
     void on_unreal_init() override {
         backend_.set_queue_limit(configured_limit("UE4SSLEB_MAX_QUEUED_EVENTS", 65536, 1000000));
         backend_.initialize();
-        const bool lifetime_abi_ready = probe_lifetime_abi();
-        lifetime_abi_ready_.store(lifetime_abi_ready, std::memory_order_release);
-        if (lifetime_abi_ready)
-        {
-            RC::Unreal::FUObjectArray::AddUObjectCreateListener(this);
-            RC::Unreal::FUObjectArray::AddUObjectDeleteListener(this);
-            listeners_registered_.store(true, std::memory_order_release);
-        }
-        else
-        {
-            OutputDebugStringA(
-                "[UE4SSLuaEventBridge] UObject lifetime ABI probe failed; lifetime API disabled\n");
-        }
+        // A failed first probe is retried later from the game thread; see
+        // lifetime_service_ready.
+        if (probe_.begin(UE4SSLuaEventBridge::LifetimeProbe::Clock::now())) start_lifetime_service();
     }
 
     void on_update() override
@@ -385,6 +396,8 @@ public:
         lua.register_function("UE4SSLuaEventBridge_LifetimeCapture", &lifetime_capture);
         lua.register_function("UE4SSLuaEventBridge_LifetimeValid", &lifetime_valid);
         lua.register_function("UE4SSLuaEventBridge_LifetimeTakeLost", &lifetime_take_lost);
+        lua.register_function("UE4SSLuaEventBridge_LifetimeReportLosses", &lifetime_report_losses);
+        lua.register_function("UE4SSLuaEventBridge_LifetimeRelease", &lifetime_release);
 
         const auto session_script =
             std::string{"__UE4SSLuaEventBridge_SessionId = "} + std::to_string(session_ptr->id);
@@ -461,13 +474,11 @@ public:
             }
             catch (const std::exception& error)
             {
-                OutputDebugStringA("[UE4SSLuaEventBridge] Lua-stop helper cleanup failed: ");
-                OutputDebugStringA(error.what());
-                OutputDebugStringA("\n");
+                report("Lua-stop helper cleanup failed: ", error.what());
             }
             catch (...)
             {
-                OutputDebugStringA("[UE4SSLuaEventBridge] Lua-stop helper cleanup failed: unknown exception\n");
+                report("Lua-stop helper cleanup failed: unknown exception");
             }
             // Native detachment is still required after a helper failure.
             // It does not remove mapping contexts owned by the Lua helper.
@@ -513,6 +524,7 @@ public:
 
     void OnUObjectArrayShutdown() override
     {
+        probe_.shut_down();
         lifetime_abi_ready_.store(false, std::memory_order_release);
         if (listeners_registered_.exchange(false, std::memory_order_acq_rel))
         {
@@ -531,9 +543,40 @@ private:
     UE4SSLuaEventBridge::LifecycleRegistry lifetimes_;
     std::atomic_bool listeners_registered_{};
     std::atomic_bool lifetime_abi_ready_{};
+    UE4SSLuaEventBridge::LifetimeProbe probe_;
+
+    // Runs the layout probe; on success starts observing UObject lifetimes.
+    bool start_lifetime_service()
+    {
+        const auto [checked, verified] = probe_lifetime_abi();
+        probe_.record(checked, verified);
+        if (!probe_.ready())
+        {
+            report("object lifetimes unavailable: ", probe_.reason().value_or("unknown"));
+            return false;
+        }
+        RC::Unreal::FUObjectArray::AddUObjectCreateListener(this);
+        RC::Unreal::FUObjectArray::AddUObjectDeleteListener(this);
+        listeners_registered_.store(true, std::memory_order_release);
+        lifetime_abi_ready_.store(true, std::memory_order_release);
+        report("object lifetimes available: the UObject layout probe verified ",
+            std::to_string(verified) + " of " + std::to_string(checked) + " classes");
+        return true;
+    }
+
+    // Retries a failed probe on the game thread, at the probe's bounded rate.
+    bool lifetime_service_ready()
+    {
+        if (lifetime_abi_ready_.load(std::memory_order_acquire) &&
+            listeners_registered_.load(std::memory_order_acquire)) return true;
+        if (!RC::Unreal::IsInGameThread() ||
+            !probe_.begin(UE4SSLuaEventBridge::LifetimeProbe::Clock::now())) return false;
+        return start_lifetime_service();
+    }
 
     void stop_lifecycle_service()
     {
+        probe_.shut_down();
         lifetime_abi_ready_.store(false, std::memory_order_release);
         if (listeners_registered_.exchange(false, std::memory_order_acq_rel))
         {
@@ -572,13 +615,11 @@ private:
             }
             catch (const std::exception& error)
             {
-                OutputDebugStringA("[UE4SSLuaEventBridge] loop-start callback failed: ");
-                OutputDebugStringA(error.what());
-                OutputDebugStringA("\n");
+                report("loop-start callback failed: ", error.what());
             }
             catch (...)
             {
-                OutputDebugStringA("[UE4SSLuaEventBridge] loop-start callback failed: unknown exception\n");
+                report("loop-start callback failed: unknown exception");
             }
         }
     }
@@ -596,7 +637,7 @@ private:
                 lua.set_string(UE4SSLuaEventBridge::delivery_fault_reason(fault->reason));
                 lua.call_function(3, 0);
             } catch (...) {
-                OutputDebugStringA("[UE4SSLuaEventBridge] delivery fault handler failed; target remains disabled\n");
+                report("delivery fault handler failed; target remains disabled");
             }
         }
     }
@@ -655,7 +696,7 @@ private:
 
     static int get_capabilities(const Lua& lua)
     {
-        lua.set_integer(5);
+        lua.set_integer(6);
         lua.set_bool(active_mod && active_mod->backend_.available());
         lua.set_bool(true);
         lua.set_bool(true);
@@ -668,9 +709,15 @@ private:
         lua.set_bool(true); // Additive binding_snapshot capability.
         lua.set_bool(true); // Additive target_delivery_faults capability.
         lua.set_bool(true); // Additive loop_start capability.
-        lua.set_bool(active_mod && active_mod->lifetime_abi_ready_.load(std::memory_order_acquire));
+        lua.set_bool(active_mod && active_mod->lifetime_service_ready());
         // Additive object_lifetimes capability, enabled only after the runtime ABI probe.
-        return 14;
+        const auto reason = active_mod
+            ? active_mod->probe_.reason()
+            : std::optional<std::string>{"the bridge is not active"};
+        if (reason) lua.set_string(*reason);
+        else lua.set_nil();
+        // Additive object_lifetimes_reason: why lifetimes are unavailable, nil when available.
+        return 15;
     }
 
     static int is_in_game_thread(const Lua& lua)
@@ -772,28 +819,31 @@ private:
         return UE4SSLuaEventBridge::ObjectLifetimeIdentity{address, index, serial};
     }
 
-    static bool probe_lifetime_abi()
+    // Returns how many classes were checked and how many verified the layout.
+    static std::pair<std::size_t, std::size_t> probe_lifetime_abi()
     {
+        std::size_t checked{};
+        std::unordered_set<int32_t> verified_indices;
         try
         {
             std::vector<RC::Unreal::UObject*> classes;
             RC::Unreal::UObjectGlobals::FindAllOf(L"Class", classes);
-            std::unordered_set<int32_t> verified_indices;
             for (auto* object : classes)
             {
                 if (!object) continue;
+                ++checked;
                 const auto address = reinterpret_cast<std::uintptr_t>(object);
                 const auto first = read_object_identity(address, false);
                 const auto second = read_object_identity(address, false);
                 if (!first || !second || *first != *second) continue;
                 verified_indices.insert(first->index);
-                if (verified_indices.size() >= 2) return true;
+                if (verified_indices.size() >= UE4SSLuaEventBridge::LifetimeProbe::required_classes) break;
             }
         }
         catch (...)
         {
         }
-        return false;
+        return {checked, verified_indices.size()};
     }
 
     static std::optional<uint64_t> parse_token(std::string_view value)
@@ -809,8 +859,7 @@ private:
     {
         auto* session = consume_session(lua);
         const auto address_value = lua.get_integer(1);
-        if (!session || !active_mod->lifetime_abi_ready_.load(std::memory_order_acquire) ||
-            !active_mod->listeners_registered_.load(std::memory_order_acquire))
+        if (!session || !active_mod->lifetime_service_ready())
         {
             lua.set_nil();
             lua.set_string("object lifetime service is unavailable");
@@ -857,6 +906,21 @@ private:
         }
         const auto identity = read_object_identity(static_cast<std::uintptr_t>(address_value));
         lua.set_bool(identity && active_mod->lifetimes_.valid(session->id, *token, *identity));
+        return 1;
+    }
+
+    static int lifetime_release(const Lua& lua)
+    {
+        auto* session = consume_session(lua);
+        const auto token = session ? parse_token(lua.get_string(1)) : std::nullopt;
+        lua.set_bool(token && active_mod->lifetimes_.release(session->id, *token));
+        return 1;
+    }
+
+    static int lifetime_report_losses(const Lua& lua)
+    {
+        auto* session = consume_session(lua);
+        lua.set_bool(session && active_mod->lifetimes_.report_losses(session->id));
         return 1;
     }
 

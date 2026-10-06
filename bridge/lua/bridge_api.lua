@@ -159,7 +159,7 @@ local function __bindAction(targetHandle, action, event, callback, trace)
 end
 
 local bridge = {
-    API_VERSION = 5,
+    API_VERSION = 6,
     GetVersion = UE4SSLuaEventBridge_GetVersion,
     GetDispatchStats = function()
         local queued, highWater, rejected, tracesRejected = UE4SSLuaEventBridge_GetDispatchStats()
@@ -170,7 +170,7 @@ local bridge = {
     GetCapabilities = function()
         local api, enhancedInput, explicitTarget, helpers, dynamicInput,
             triggerTap, triggerHold, detailedErrors, debugTracing, target, bindingSnapshot,
-            targetDeliveryFaults, loopStart, objectLifetimes =
+            targetDeliveryFaults, loopStart, objectLifetimes, objectLifetimesReason =
             UE4SSLuaEventBridge_GetCapabilities()
         return {
             api = api,
@@ -187,6 +187,9 @@ local bridge = {
             target_delivery_faults = targetDeliveryFaults == true,
             loop_start = loopStart == true,
             object_lifetimes = objectLifetimes == true,
+            object_lifetimes_reason = objectLifetimes ~= true and objectLifetimesReason or nil,
+            weak_handles = objectLifetimes == true,
+            loss_opt_in = objectLifetimes == true,
         }
     end,
     SetTargetDeliveryFaultHandler = function(target, callback)
@@ -260,30 +263,93 @@ bridge.onLoopStart = function(callback)
     end
 end
 
+local function __captureObject(object)
+    if object == nil then return nil, "object must be a live UE4SS UObject wrapper" end
+    local checked, valid = pcall(function() return object:IsValid() end)
+    if not checked or valid ~= true then
+        return nil, "object must be a live UE4SS UObject wrapper"
+    end
+    local resolved, address = pcall(function() return object:GetAddress() end)
+    if not resolved or not __positiveInteger(address) then
+        return nil, "object did not provide a valid UObject address"
+    end
+    local token, why = UE4SSLuaEventBridge_LifetimeCapture(__session, address)
+    if token == nil then return nil, why end
+    return token, address
+end
+
+local __weakState = setmetatable({}, { __mode = "k" })
+local __WeakHandle = {}
+__WeakHandle.__index = __WeakHandle
+__WeakHandle.__metatable = false
+
+-- Returns the wrapper while its UObject lives, without reading object memory
+-- first. Off the game thread it returns nil and an error but keeps the wrapper.
+function __WeakHandle:get()
+    local state = __weakState[self]
+    if state == nil or state.object == nil then return nil end
+    if UE4SSLuaEventBridge_IsInGameThread() ~= true then
+        return nil, "weak handles must be read on the Unreal game thread"
+    end
+    if UE4SSLuaEventBridge_LifetimeValid(__session, state.address, state.token) == true then
+        return state.object
+    end
+    state.object = nil
+    return nil
+end
+
+-- Token and address of the captured lifetime; stable for the handle's life.
+function __WeakHandle:identity()
+    local state = __weakState[self]
+    if state == nil then return nil end
+    return state.token, state.address
+end
+
+-- Forgets the wrapper and returns the handle's share of its observation.
+function __WeakHandle:release()
+    local state = __weakState[self]
+    if state == nil or state.released then return end
+    state.object, state.released = nil, true
+    UE4SSLuaEventBridge_LifetimeRelease(__session, state.token)
+end
+__WeakHandle.__gc = __WeakHandle.release
+
 bridge.lifetimes = {
     captureAddress = function(address)
         if not __positiveInteger(address) then return nil, "address must be a positive integer" end
         return UE4SSLuaEventBridge_LifetimeCapture(__session, address)
     end,
     captureObject = function(object)
-        if object == nil then return nil, "object must be a live UE4SS UObject wrapper" end
-        local checked, valid = pcall(function() return object:IsValid() end)
-        if not checked or valid ~= true then
-            return nil, "object must be a live UE4SS UObject wrapper"
-        end
-        local resolved, address = pcall(function() return object:GetAddress() end)
-        if not resolved or not __positiveInteger(address) then
-            return nil, "object did not provide a valid UObject address"
-        end
-        return UE4SSLuaEventBridge_LifetimeCapture(__session, address)
+        local token, why = __captureObject(object)
+        if token == nil then return nil, why end
+        return token
+    end,
+    -- Drops one capture of token; the last capture ends the observation.
+    release = function(token)
+        if type(token) ~= "string" or token:match("^[1-9][0-9]*$") == nil then return false end
+        return UE4SSLuaEventBridge_LifetimeRelease(__session, token) == true
     end,
     valid = function(address, token)
         if not __positiveInteger(address) or type(token) ~= "string" or
             token:match("^[1-9][0-9]*$") == nil then return false end
         return UE4SSLuaEventBridge_LifetimeValid(__session, address, token) == true
     end,
+    -- Losses are queued only after the session opts in, here or by calling takeLost.
+    reportLosses = function()
+        return UE4SSLuaEventBridge_LifetimeReportLosses(__session) == true
+    end,
     takeLost = function()
         return UE4SSLuaEventBridge_LifetimeTakeLost(__session)
+    end,
+    weak = function(object)
+        if UE4SSLuaEventBridge_IsInGameThread() ~= true then
+            return nil, "weak handles must be created on the Unreal game thread"
+        end
+        local token, address = __captureObject(object)
+        if token == nil then return nil, address end
+        local handle = setmetatable({}, __WeakHandle)
+        __weakState[handle] = { object = object, address = address, token = token }
+        return handle
     end,
 }
 

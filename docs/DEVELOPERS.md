@@ -62,7 +62,7 @@ The current API reports:
 
 ```lua
 {
-    api = 5,
+    api = 6,
     enhanced_input = true,
     explicit_target = true,
     helpers = true,
@@ -75,6 +75,9 @@ The current API reports:
     target_delivery_faults = true,
     loop_start = true,
     object_lifetimes = true,
+    object_lifetimes_reason = nil, -- a string when object_lifetimes is false
+    weak_handles = true,
+    loss_opt_in = true,
     target_ue4ss_commit = "97b7e501",
 }
 ```
@@ -83,11 +86,16 @@ Gate optional features on `GetCapabilities()`. `GetVersion()` identifies the
 product release; `API_VERSION` identifies the API contract. A version number
 is useful metadata, but a poor crystal ball.
 
-`object_lifetimes` is `true` only after a one-time runtime ABI probe validates
-the configured UObject internal-index and object-item pointer/serial offsets
-against multiple live `UClass` objects. A failed probe leaves the capability
-false, skips listener registration, and makes every lifetime operation fail
-closed for the process.
+`object_lifetimes` is `true` only after a runtime ABI probe validates the
+configured UObject internal-index and object-item pointer/serial offsets against
+multiple live `UClass` objects. A failed probe leaves the capability false,
+skips listener registration, and makes every lifetime operation fail closed.
+The probe runs at Unreal initialization; if it fails, a capture or
+`GetCapabilities()` call on the game thread retries it, at most once per second
+and ten times in all. While lifetimes are unavailable,
+`object_lifetimes_reason` says why: the probe has not run, how many classes it
+verified, whether it is still retrying, or that the object array shut down.
+Each probe outcome is also written to UE4SS.log.
 
 ## Loop start and object lifetimes
 
@@ -117,6 +125,8 @@ local token, err = UE4SSLuaEventBridge.lifetimes.captureObject(object)
 local trustedToken, trustedError =
     UE4SSLuaEventBridge.lifetimes.captureAddress(address)
 local stillLive = UE4SSLuaEventBridge.lifetimes.valid(address, token)
+local released = UE4SSLuaEventBridge.lifetimes.release(token)
+local reporting = UE4SSLuaEventBridge.lifetimes.reportLosses()
 local lostToken, lossError = UE4SSLuaEventBridge.lifetimes.takeLost()
 ```
 
@@ -126,17 +136,51 @@ and obtains `GetAddress()` synchronously before native identity validation. Use
 object; a retained numeric address cannot prove its own provenance. Call all
 lifetime operations on the Unreal game thread. A token
 does not root the object. Native object-array listeners invalidate observations
-without entering Lua; `takeLost` drains one invalidated token at a time from the
-calling session. Tokens and loss queues are isolated between Lua sessions and
+without entering Lua. Loss reporting is opt-in per session: after
+`reportLosses()` or the first `takeLost()` call, each invalidated token is
+queued, and `takeLost` drains one at a time. Losses before opting in are not
+queued, so call `reportLosses()` at startup to receive all of them. Capturing a
+live object again returns its existing token and adds a reference; `release`
+drops one reference, and the last one ends the observation without a loss. Tokens and loss queues are isolated between Lua sessions and
 are cleared when their session stops. Address or object-array index reuse gets a
 new token because identity also includes the current object-item serial number.
 
 Each session permits 4,096 live observations and 4,096 queued losses. Exceeding
-the observation limit rejects a new capture. Loss-queue overflow faults the
-session's lifetime service: all subsequent validations fail, capture is rejected,
+the observation limit rejects a new capture; observations end when their object
+dies. A session that has not opted in queues no losses and cannot overflow. For
+an opted-in session, loss-queue overflow faults the session's lifetime service: all subsequent validations fail, capture is rejected,
 and `takeLost` returns an error instructing the consumer to discard cached object
 state and reload its Lua session. This fail-closed behavior avoids treating an
 incomplete invalidation stream as trustworthy.
+
+### Weak handles
+
+Keep a weak handle instead of a UE4SS wrapper whenever an object must outlive
+the current call. UE4SS `IsValid()` reads the object, so calling it on a wrapper
+kept past garbage collection, as when a save loads from a running game, reads
+freed memory. A weak handle checks the native lifetime first and never
+dereferences a dead object.
+
+```lua
+local handle, err = UE4SSLuaEventBridge.lifetimes.weak(object)
+local live = handle:get()             -- the wrapper while alive, otherwise nil
+local token, address = handle:identity()
+handle:release()                      -- forget the wrapper early
+```
+
+Pass `weak()` a fresh wrapper: a hook argument, a `FindAllOf` or
+`StaticFindObject` result, or a creation notification. `weak()` calls
+`IsValid()` once to prove the wrapper is live, so a wrapper that was already
+cached across a garbage collection can crash there just as anywhere else.
+
+Create and read handles on the game thread. Off the game thread `get()` returns
+nil and an error but keeps the wrapper for a later game-thread read. Once the
+object dies, `get()` returns nil for good, even if its address is reused.
+`identity()` keeps returning the captured token and address, so handles can key
+caches. Each handle uses one of the session's observations until its object
+dies or every handle and capture for it is released; handles for the same
+object share one observation. `release()`, or collecting the handle, returns
+its share.
 
 ## Library primitives
 

@@ -36,3 +36,4 @@ EXPORTS
     ?set_number@Lua@LuaMadeSimple@RC@@QEBAXN@Z
     ?set_string@Lua@LuaMadeSimple@RC@@QEBAXV?$basic_string_view@DU?$char_traits@D@std@@@std@@@Z
     ?call_function@Lua@LuaMadeSimple@RC@@QEBAXHH@Z
+    ?send@Output@RC@@YAXV?$basic_string_view@_WU?$char_traits@_W@std@@@std@@@Z
