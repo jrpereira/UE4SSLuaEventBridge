@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.0.12
+
+### Changes
+
+- Capture live objects that were never weakly referenced. Unreal assigns their
+  object-item serial lazily, so `lifetimes.captureObject` and `lifetimes.weak`
+  rejected freshly created widgets as not live. They now initialize the serial
+  through `KismetSystemLibrary` and validate once more, as generated
+  InputActions already did.
+
 ## v1.0.11
 
 ### Changes
