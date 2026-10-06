@@ -15,6 +15,7 @@ local function fixture()
         gameThread = true, contexts = {}, bindings = {}, targets = {},
         nextId = 0, nextSession = 0, removeFailures = 0, unbindFailures = 0,
         removals = 0, mutations = 0, componentAlive = true, dead = {}, constructed = {},
+        unserialized = {}, serialized = 0,
     }
     function f:id() self.nextId = self.nextId + 1; return self.nextId end
     function f:mutate()
@@ -55,8 +56,16 @@ local function fixture()
         env.StaticFindObject = function(path)
             if path == "Subsystem" then return self.subsystem end
             if path == "/Script/Engine.Default__KismetSystemLibrary" then
+                if self.kismetMissing then return nil end
                 return { IsValid = function() return true end,
-                    Conv_ObjectToSoftObjectReference = function() self:mutate() end }
+                    -- A soft reference gives a live object its weak serial.
+                    Conv_ObjectToSoftObjectReference = function(_, target)
+                        self:mutate()
+                        self.serialized = self.serialized + 1
+                        if type(target) == "table" and type(target.GetAddress) == "function" then
+                            self.unserialized[target:GetAddress()] = nil
+                        end
+                    end }
             end
             local c = object("Class")
             c.class = path:match("%.([^%.]+)$")
@@ -91,6 +100,10 @@ local function fixture()
         end
         env.UE4SSLuaEventBridge_LifetimeCapture = function(id, address)
             own(id)
+            -- Native capture rejects objects without a serial, as it does dead ones.
+            if self.unserialized[address] or self.dead[address] then
+                return nil, "address is not a live UObject"
+            end
             local token = tostring(address + 1000)
             session.references[token] = (session.references[token] or 0) + 1
             return token
@@ -313,6 +326,33 @@ cases["weak handle creation rejects dead wrappers"] = function()
     check(none == nil and why:find("live UE4SS UObject wrapper", 1, true))
     none, why = s.api.lifetimes.weak(nil)
     check(none == nil and why:find("live UE4SS UObject wrapper", 1, true))
+end
+
+cases["capture initializes the serial of a never weakly referenced object"] = function()
+    local f = fixture()
+    local s = f:loadSession()
+    local o = trackedObject(706)
+    f.unserialized[706] = true
+    local handle = check(s.api.lifetimes.weak(o))
+    check(f.serialized == 1 and handle:get() == o, "serial-less live object not captured")
+    check(handle:identity() == "1706", "retry keeps the index and serial identity")
+    check(s.api.lifetimes.captureObject(o) == "1706" and f.serialized == 1,
+        "a serialized object is captured without another initialization")
+    f.unserialized[707] = true
+    check(s.api.lifetimes.captureObject(trackedObject(707)) == "1707" and f.serialized == 2)
+end
+
+cases["capture retries once and keeps the native reason for dead objects"] = function()
+    local f = fixture()
+    local s = f:loadSession()
+    f.dead[708] = true
+    local none, why = s.api.lifetimes.weak(trackedObject(708))
+    check(none == nil and why == "address is not a live UObject", "dead object reason changed")
+    check(f.serialized == 1, "a rejected capture initializes the serial once")
+    f.kismetMissing, f.unserialized[709] = true, true
+    none, why = s.api.lifetimes.captureObject(trackedObject(709))
+    check(none == nil and why:find("failed to initialize its weak reference", 1, true),
+        "initialization failure not reported")
 end
 
 cases["losses are reported only after the session opts in"] = function()

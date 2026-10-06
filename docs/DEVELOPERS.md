@@ -131,7 +131,12 @@ local lostToken, lossError = UE4SSLuaEventBridge.lifetimes.takeLost()
 ```
 
 Use `captureObject` for ordinary UE4SS UObject wrappers. It checks `IsValid()`
-and obtains `GetAddress()` synchronously before native identity validation. Use
+and obtains `GetAddress()` synchronously before native identity validation.
+Unreal assigns object-item serials lazily, on first weak reference, so a live
+object that was never weakly referenced has none; when native validation rejects
+the object, `captureObject` and `weak` initialize its serial through
+`KismetSystemLibrary:Conv_ObjectToSoftObjectReference` and validate once more.
+`captureAddress` has no wrapper to initialize and does not retry. Use
 `captureAddress` only for a trusted address obtained from a freshly resolved live
 object; a retained numeric address cannot prove its own provenance. Call all
 lifetime operations on the Unreal game thread. A token

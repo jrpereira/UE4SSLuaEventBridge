@@ -263,6 +263,21 @@ bridge.onLoopStart = function(callback)
     end
 end
 
+-- Asks Unreal to initialize the object's weak identity. Unreal assigns object
+-- serials lazily, on first weak reference, so a live object can still have
+-- none. Do not use the pinned native AllocateSerialNumber wrapper: its C++
+-- soft-reference copy faults. The reflected function takes one UObject and
+-- returns a soft object ref; the result is deliberately discarded.
+local function __initializeWeakIdentity(object)
+    return pcall(function()
+        local system = StaticFindObject("/Script/Engine.Default__KismetSystemLibrary")
+        if system == nil or not system:IsValid() then error("KismetSystemLibrary default object is unavailable") end
+        system:Conv_ObjectToSoftObjectReference(object)
+    end)
+end
+
+local __unidentifiedObject = "address is not a live UObject"
+
 local function __captureObject(object)
     if object == nil then return nil, "object must be a live UE4SS UObject wrapper" end
     local checked, valid = pcall(function() return object:IsValid() end)
@@ -274,6 +289,14 @@ local function __captureObject(object)
         return nil, "object did not provide a valid UObject address"
     end
     local token, why = UE4SSLuaEventBridge_LifetimeCapture(__session, address)
+    if token == nil and why == __unidentifiedObject then
+        -- A live object that was never weakly referenced has no serial yet.
+        local initialized, initializeError = __initializeWeakIdentity(object)
+        if not initialized then
+            return nil, why .. "; failed to initialize its weak reference: " .. tostring(initializeError)
+        end
+        token, why = UE4SSLuaEventBridge_LifetimeCapture(__session, address)
+    end
     if token == nil then return nil, why end
     return token, address
 end
@@ -639,15 +662,8 @@ function __scopeMethods:Bind(key, trigger, callback, options)
         return nil, message .. (removeError and "; " .. removeError or "")
     end
 
-    -- Ask Unreal to initialize its own weak identity. Do not use the pinned
-    -- native AllocateSerialNumber wrapper: its C++ soft-reference copy faults.
-    -- The reflected function takes one UObject and returns a soft object ref;
-    -- we deliberately discard the result and verify identity in native Bind.
-    local initialized, initializeError = pcall(function()
-        local system = StaticFindObject("/Script/Engine.Default__KismetSystemLibrary")
-        if system == nil or not system:IsValid() then error("KismetSystemLibrary default object is unavailable") end
-        system:Conv_ObjectToSoftObjectReference(action)
-    end)
+    -- Ask Unreal to initialize its own weak identity; native Bind verifies it.
+    local initialized, initializeError = __initializeWeakIdentity(action)
     if not initialized then
         return nil, "failed to initialize generated InputAction weak reference: " .. tostring(initializeError)
     end
