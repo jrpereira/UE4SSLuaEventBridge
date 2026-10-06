@@ -7,23 +7,23 @@ trap 'rm -rf "${build_dir}"' EXIT
 generated_dir="${build_dir}/generated"
 mkdir -p "${generated_dir}"
 header="${generated_dir}/EmbeddedLuaAPI.hpp"
+# Mirror bridge/CMakeLists.txt: as many fixed-size chunks as the API needs.
+lua_api="${repo_root}/bridge/lua/bridge_api.lua"
+chunk_size=7000
+lua_size="$(wc -c < "${lua_api}")"
+chunk_count=$(( (lua_size + chunk_size - 1) / chunk_size ))
 printf '%s\n' \
     '#pragma once' \
     '#include <array>' \
     '#include <string_view>' \
     'namespace UE4SSLuaEventBridge {' \
-    'inline constexpr std::array<std::string_view, 3> embedded_lua_api_chunks{' \
+    "inline constexpr std::array<std::string_view, ${chunk_count}> embedded_lua_api_chunks{" \
     > "${header}"
-for offset in 0 7000; do
+for (( index = 0; index < chunk_count; index++ )); do
     printf '%s' 'R"UE4SSLEB_LUA(' >> "${header}"
-    dd if="${repo_root}/bridge/lua/bridge_api.lua" bs=1 skip="${offset}" count=7000 \
-        status=none >> "${header}"
+    dd if="${lua_api}" bs="${chunk_size}" skip="${index}" count=1 status=none >> "${header}"
     printf '%s\n' ')UE4SSLEB_LUA",' >> "${header}"
 done
-printf '%s' 'R"UE4SSLEB_LUA(' >> "${header}"
-dd if="${repo_root}/bridge/lua/bridge_api.lua" bs=1 skip=14000 \
-    status=none >> "${header}"
-printf '%s\n' ')UE4SSLEB_LUA",' >> "${header}"
 printf '%s\n' '};' '}' >> "${header}"
 
 g++ \

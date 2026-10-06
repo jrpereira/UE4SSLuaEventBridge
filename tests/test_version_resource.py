@@ -11,23 +11,14 @@ class VersionResourceTests(unittest.TestCase):
         source = (ROOT / 'bridge/lua/bridge_api.lua').read_text()
         cmake = (ROOT / 'bridge/CMakeLists.txt').read_text()
         template = (ROOT / 'bridge/cmake/EmbeddedLuaAPI.hpp.in').read_text()
-        declarations = re.findall(
-            r'string\(SUBSTRING "\$\{UE4SSLEB_LUA_API\}" (\d+) (-?\d+) (UE4SSLEB_LUA_API_\d+)\)',
-            cmake)
-        self.assertTrue(declarations)
-
-        rebuilt = ''
-        expected_offset = 0
-        for offset_text, length_text, name in declarations:
-            offset = int(offset_text)
-            length = int(length_text)
-            self.assertEqual(offset, expected_offset)
-            chunk = source[offset:] if length == -1 else source[offset:offset + length]
-            self.assertLessEqual(len(chunk), 7000)
-            self.assertEqual(template.count(f'@{name}@'), 1)
-            rebuilt += chunk
-            expected_offset += len(chunk)
-        self.assertEqual(rebuilt, source)
+        size = re.search(r'set\(UE4SSLEB_LUA_API_CHUNK_SIZE (\d+)\)', cmake)
+        self.assertIsNotNone(size)
+        # MSVC rejects string literals over about 16 KB; keep a wide margin.
+        self.assertLessEqual(int(size[1]), 7000)
+        self.assertIn('while(UE4SSLEB_LUA_API_OFFSET LESS UE4SSLEB_LUA_API_LENGTH)', cmake)
+        self.assertEqual(template.count('@UE4SSLEB_LUA_API_CHUNK_COUNT@'), 1)
+        self.assertEqual(template.count('@UE4SSLEB_LUA_API_CHUNKS@'), 1)
+        self.assertNotIn(')UE4SSLEB_LUA', source)
 
     def test_resource_and_packaging_share_canonical_version(self):
         header = (ROOT / 'contract/Version.hpp').read_text()
