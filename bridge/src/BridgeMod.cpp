@@ -247,9 +247,7 @@ public:
     void on_unreal_init() override {
         backend_.set_queue_limit(configured_limit("UE4SSLEB_MAX_QUEUED_EVENTS", 65536, 1000000));
         backend_.initialize();
-        // A failed first probe is retried later from the game thread; see
-        // lifetime_service_ready.
-        if (probe_.begin(UE4SSLuaEventBridge::LifetimeProbe::Clock::now())) start_lifetime_service();
+        start_lifetime_service();
     }
 
     void on_update() override
@@ -570,14 +568,10 @@ private:
         return true;
     }
 
-    // Retries a failed probe on the game thread, at the probe's bounded rate.
-    bool lifetime_service_ready()
+    bool lifetime_service_ready() const
     {
-        if (lifetime_abi_ready_.load(std::memory_order_acquire) &&
-            listeners_registered_.load(std::memory_order_acquire)) return true;
-        if (!RC::Unreal::IsInGameThread() ||
-            !probe_.begin(UE4SSLuaEventBridge::LifetimeProbe::Clock::now())) return false;
-        return start_lifetime_service();
+        return lifetime_abi_ready_.load(std::memory_order_acquire) &&
+            listeners_registered_.load(std::memory_order_acquire);
     }
 
     void stop_lifecycle_service()

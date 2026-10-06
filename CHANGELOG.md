@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Changes
+
+- Probe the UObject layout once, at Unreal initialization, instead of retrying
+  from the game thread. A failed probe is a layout mismatch that a retry would
+  not change, and a successful retry registered object-array listeners
+  mid-game, where the engine's loading threads may be using them.
+
 ## v1.0.9
 
 ### Changes
