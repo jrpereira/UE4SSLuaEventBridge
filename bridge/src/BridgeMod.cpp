@@ -523,7 +523,7 @@ private:
         listeners_registered_.store(true, std::memory_order_release);
         lifetime_abi_ready_.store(true, std::memory_order_release);
         report("object lifetimes available: the UObject layout probe verified ",
-            std::to_string(verified) + " of " + std::to_string(checked) + " classes");
+            std::to_string(verified) + " of " + std::to_string(checked) + " objects");
         return true;
     }
 
@@ -778,31 +778,39 @@ private:
         return UE4SSLuaEventBridge::ObjectLifetimeIdentity{address, index, serial};
     }
 
-    // Returns how many classes were checked and how many verified the layout.
+    // Returns how many live objects were checked and how many verified the
+    // layout. Walks the object array by index rather than by class name: name
+    // lookups can come back empty at initialization. The bound stays inside the
+    // array's first 64K-slot chunk, so every index is backed by memory.
     static std::pair<std::size_t, std::size_t> probe_lifetime_abi()
     {
+        constexpr int32_t probe_index_limit = 4096;
+        const auto read = [](const void* source, void* destination, std::size_t size) {
+            std::size_t copied{};
+            return source && ReadProcessMemory(
+                GetCurrentProcess(), source, destination, size, &copied) && copied == size;
+        };
         std::size_t checked{};
-        std::unordered_set<int32_t> verified_indices;
+        std::size_t verified{};
         try
         {
-            std::vector<RC::Unreal::UObject*> classes;
-            RC::Unreal::UObjectGlobals::FindAllOf(L"Class", classes);
-            for (auto* object : classes)
+            for (int32_t index = 0; index < probe_index_limit; ++index)
             {
-                if (!object) continue;
+                const auto* item = RC::Unreal::FUObjectArray::IndexToObject(index);
+                RC::Unreal::UObject* object{};
+                if (!item || !read(item, &object, sizeof(object)) || !object) continue;
                 ++checked;
                 const auto address = reinterpret_cast<std::uintptr_t>(object);
                 const auto first = read_object_identity(address, false);
                 const auto second = read_object_identity(address, false);
-                if (!first || !second || *first != *second) continue;
-                verified_indices.insert(first->index);
-                if (verified_indices.size() >= UE4SSLuaEventBridge::LifetimeProbe::required_classes) break;
+                if (!first || !second || *first != *second || first->index != index) continue;
+                if (++verified >= UE4SSLuaEventBridge::LifetimeProbe::required_objects) break;
             }
         }
         catch (...)
         {
         }
-        return {checked, verified_indices.size()};
+        return {checked, verified};
     }
 
     static std::optional<uint64_t> parse_token(std::string_view value)

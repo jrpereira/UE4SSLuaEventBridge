@@ -336,7 +336,7 @@ cases["capabilities explain unavailable lifetimes"] = function()
     local caps = s.api.GetCapabilities()
     check(caps.api == 6 and caps.object_lifetimes and caps.weak_handles and caps.loss_opt_in)
     check(caps.object_lifetimes_reason == nil, "an available service has no reason")
-    f.lifetimesReason = "the UObject layout probe verified 0 of 40 classes (2 required); retrying"
+    f.lifetimesReason = "the UObject layout probe verified 0 of 40 objects (2 required)"
     caps = s.api.GetCapabilities()
     check(not caps.object_lifetimes and not caps.weak_handles and not caps.loss_opt_in)
     check(caps.object_lifetimes_reason == f.lifetimesReason, "reason not exposed")

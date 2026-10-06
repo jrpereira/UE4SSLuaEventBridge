@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- Probe the UObject layout by walking the start of the object array by index
+  instead of looking up `Class` objects by name. On Dawnwalker the name lookup
+  returned nothing at initialization, so the probe checked no objects and
+  disabled lifetimes for the process.
+- Report a probe that found no live objects separately from a layout mismatch.
+
 ## v1.0.10
 
 ### Changes

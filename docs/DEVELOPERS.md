@@ -88,13 +88,14 @@ is useful metadata, but a poor crystal ball.
 
 `object_lifetimes` is `true` only after a runtime ABI probe validates the
 configured UObject internal-index and object-item pointer/serial offsets against
-multiple live `UClass` objects. The probe runs once, at Unreal initialization,
-when those native classes already exist; a failure is a layout mismatch that a
+multiple live objects. The probe runs once, at Unreal initialization, and walks
+the start of the object array by index instead of looking classes up by name,
+which can come back empty at that point; a failure is a layout mismatch that a
 later attempt would not change. A failed probe leaves the capability false,
 skips listener registration, and makes every lifetime operation fail closed for
 the process. While lifetimes are unavailable, `object_lifetimes_reason` says
-why: the probe has not run, how many classes it verified, or that the object
-array shut down. The probe outcome is also written to UE4SS.log.
+why: the probe has not run, found no live objects, how many objects it
+verified, or that the object array shut down. The probe outcome is also written to UE4SS.log.
 
 ## Loop start and object lifetimes
 

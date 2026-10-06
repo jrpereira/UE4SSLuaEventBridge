@@ -8,14 +8,14 @@
 namespace UE4SSLuaEventBridge
 {
 // Status of the UObject layout probe that gates object lifetimes. The probe
-// runs once at Unreal initialization: it checks offsets against native classes
-// that already exist then, so a failure is a layout mismatch that a later
-// attempt would not change, and registering object-array listeners mid-game
-// could race the engine's loading threads.
+// runs once at Unreal initialization: it checks offsets against objects that
+// already sit in the object array then, so a failure is a layout mismatch that
+// a later attempt would not change, and registering object-array listeners
+// mid-game could race the engine's loading threads.
 class LifetimeProbe
 {
 public:
-    static constexpr std::size_t required_classes = 2;
+    static constexpr std::size_t required_objects = 2;
 
     void record(std::size_t checked, std::size_t verified)
     {
@@ -23,7 +23,7 @@ public:
         ran_ = true;
         checked_ = checked;
         verified_ = verified;
-        ready_ = verified >= required_classes;
+        ready_ = verified >= required_objects;
     }
 
     void shut_down()
@@ -46,8 +46,9 @@ public:
         if (shut_down_) return std::string{"the UObject array has shut down"};
         if (ready_) return std::nullopt;
         if (!ran_) return std::string{"the UObject layout probe has not run"};
+        if (checked_ == 0) return std::string{"the UObject layout probe found no live objects to check"};
         return "the UObject layout probe verified " + std::to_string(verified_) + " of " +
-            std::to_string(checked_) + " classes (" + std::to_string(required_classes) + " required)";
+            std::to_string(checked_) + " objects (" + std::to_string(required_objects) + " required)";
     }
 
 private:
