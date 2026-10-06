@@ -383,6 +383,21 @@ local __scopeMetatable = {
 local __scopeStates = setmetatable({}, { __mode = "k" })
 local __inputScopes = {}
 local __classCache = {}
+-- RF_Transient, and RF_MarkAsRootSet for private mapping contexts: the game may
+-- clear its mappings, which would otherwise leave a context to be collected
+-- while a scope still uses it. Rooted contexts are never released, so closed
+-- ones are emptied and reused instead of leaked.
+local __transientFlags = 0x40
+local __rootedFlags = 0xC0
+local __contextPool = {}
+
+-- Holds a long-lived object without dereferencing it after it dies, using a
+-- weak handle when native lifetimes are available.
+local function __keep(object)
+    local handle = bridge.lifetimes.weak(object)
+    if handle ~= nil then return { weak = handle } end
+    return { object = object }
+end
 local __nextScopeId = 0
 local __nextBindingId = 0
 
@@ -429,11 +444,17 @@ local function __getClass(name)
     return class
 end
 
-local function __construct(name, outer)
+local function __held(holder)
+    if holder == nil then return nil end
+    if holder.weak ~= nil then return holder.weak:get() end
+    return __validObject(holder.object) and holder.object or nil
+end
+
+local function __construct(name, outer, flags)
     local class, classError = __getClass(name)
     if class == nil then return nil, classError end
 
-    local ok, object = pcall(StaticConstructObject, class, outer, 0, 0x40)
+    local ok, object = pcall(StaticConstructObject, class, outer, 0, flags or __transientFlags)
     if not ok then
         return nil, "failed to create transient " .. name .. ": " .. tostring(object)
     end
@@ -455,31 +476,30 @@ local function __objectPath(object)
     return path
 end
 
-local function __removeContext(state, record)
-    if record.context == nil then return true end
-    if not record.context_added then
-        record.context = nil
-        record.action = nil
-        record.trigger_object = nil
-        return true
-    end
-    if not __validObject(state.subsystem) or not __validObject(record.context) then
-        record.context = nil
-        record.action = nil
-        record.trigger_object = nil
-        return true
-    end
-
-    local ok, removeError = pcall(function()
-        state.subsystem:RemoveMappingContext(record.context, {})
-    end)
-    if not ok then
-        return false, "failed to remove private Input Mapping Context: " .. tostring(removeError)
-    end
+-- Empties a rooted context and keeps it for the next Bind.
+local function __recycleContext(record)
+    local context = record.context
     record.context = nil
     record.action = nil
     record.trigger_object = nil
     record.context_added = false
+    if context ~= nil and __validObject(context) and pcall(function() context:UnmapAll() end) then
+        __contextPool[#__contextPool + 1] = context
+    end
+end
+
+local function __removeContext(state, record)
+    if record.context == nil then return true end
+    local subsystem = record.context_added and __held(state.subsystem) or nil
+    if subsystem ~= nil then
+        local ok, removeError = pcall(function()
+            subsystem:RemoveMappingContext(record.context, {})
+        end)
+        if not ok then
+            return false, "failed to remove private Input Mapping Context: " .. tostring(removeError)
+        end
+    end
+    __recycleContext(record)
     return true
 end
 
@@ -562,8 +582,14 @@ function __scopeMethods:Bind(key, trigger, callback, options)
     local bindingId = __nextBindingId
     local triggerKind = trigger == __tap and 1 or 2
 
-    local context, createError = __construct("InputMappingContext", state.subsystem)
-    if context == nil then return nil, createError end
+    local subsystem = __held(state.subsystem)
+    if subsystem == nil then return nil, "Enhanced Input subsystem is no longer live" end
+    local context = table.remove(__contextPool)
+    local createError
+    if context == nil or not __validObject(context) then
+        context, createError = __construct("InputMappingContext", subsystem, __rootedFlags)
+        if context == nil then return nil, createError end
+    end
     local action
     action, createError = __construct("InputAction", context)
     if action == nil then return nil, createError end
@@ -687,7 +713,7 @@ function __scopeMethods:Bind(key, trigger, callback, options)
 
     record.context_added = true
     local contextAdded, addError = pcall(function()
-        state.subsystem:AddMappingContext(context, state.mapping_priority, {})
+        subsystem:AddMappingContext(context, state.mapping_priority, {})
     end)
     if not contextAdded then
         local removed, removeError = __removeRecord(state, record)
@@ -712,6 +738,29 @@ function __scopeMethods:Unbind(handle)
     local removed, removeError = __removeRecord(state, record)
     if not removed then return false, removeError end
     state.bindings[handle] = nil
+    return true
+end
+
+-- Re-applies this scope's private contexts, for example after the game cleared
+-- its mappings. Adding an applied context again is harmless.
+function __scopeMethods:Refresh()
+    local state = __scopeStates[self]
+    assert(state ~= nil, "invalid input scope")
+    if state.closed then return false, "input scope is closed" end
+    local onGameThread, threadError = __onGameThread("input:Refresh")
+    if not onGameThread then return false, threadError end
+    local subsystem = __held(state.subsystem)
+    if subsystem == nil then return false, "Enhanced Input subsystem is no longer live" end
+    local errors = {}
+    for _, record in pairs(state.bindings) do
+        if record.context_added and record.context ~= nil then
+            local ok, addError = pcall(function()
+                subsystem:AddMappingContext(record.context, state.mapping_priority, {})
+            end)
+            if not ok then errors[#errors + 1] = tostring(addError) end
+        end
+    end
+    if #errors > 0 then return false, "failed to re-apply private Input Mapping Context: " .. table.concat(errors, "; ") end
     return true
 end
 
@@ -811,7 +860,7 @@ function Helpers.OpenInput(options)
     __nextScopeId = __nextScopeId + 1
     local state = {
         target = target,
-        subsystem = subsystem,
+        subsystem = __keep(subsystem),
         mapping_priority = mappingPriority,
         scope_id = __nextScopeId,
         debug = debugEnabled,

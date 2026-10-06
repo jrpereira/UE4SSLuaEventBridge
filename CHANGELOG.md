@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Changes
+
+- Root helper mapping contexts at construction so a game that clears its
+  mappings cannot get them collected, and reuse emptied contexts instead of
+  rooting new ones.
+- Hold the helper subsystem through a weak handle, so a freed subsystem is never
+  dereferenced.
+- Add `input:Refresh()` to re-apply a scope's contexts after the game clears its
+  mappings.
+- Write failed input callbacks, which disable their binding, to UE4SS.log.
+- Generate the embedded Lua API chunks from the file's size, so the API can
+  grow without build changes.
+- Run every Python test module in CI.
+
 ## v1.0.8
 
 ### Changes

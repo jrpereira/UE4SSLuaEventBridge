@@ -345,6 +345,10 @@ public:
                     subscription->phase_name,
                     event.sequence,
                     callback_error.what());
+                // The binding is disabled below; say so even without tracing.
+                report("input callback for " + subscription->action_path_utf8 + " (" +
+                           subscription->phase_name + ") failed; binding disabled: ",
+                       callback_error.what());
                 // Lua callbacks run on UE4SS's event-loop thread. Deactivate
                 // immediately, then let the next game-thread bridge operation
                 // detach the native binding.
@@ -361,6 +365,8 @@ public:
                     subscription->phase_name,
                     event.sequence,
                     "unknown_lua_exception");
+                report("input callback for " + subscription->action_path_utf8 + " (" +
+                       subscription->phase_name + ") failed; binding disabled: unknown exception");
                 backend_.report_delivery_fault(*subscription, UE4SSLuaEventBridge::DeliveryFault::CallbackError);
                 backend_.deactivate(*session, subscription->id);
                 flush_delivery_faults();

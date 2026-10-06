@@ -14,7 +14,7 @@ local function fixture()
     local f = {
         gameThread = true, contexts = {}, bindings = {}, targets = {},
         nextId = 0, nextSession = 0, removeFailures = 0, unbindFailures = 0,
-        removals = 0, mutations = 0, componentAlive = true, dead = {},
+        removals = 0, mutations = 0, componentAlive = true, dead = {}, constructed = {},
     }
     function f:id() self.nextId = self.nextId + 1; return self.nextId end
     function f:mutate()
@@ -62,10 +62,13 @@ local function fixture()
             c.class = path:match("%.([^%.]+)$")
             return c
         end
-        env.StaticConstructObject = function(class)
+        env.StaticConstructObject = function(class, _outer, _name, flags)
             self:mutate()
             local o = object(class.class)
+            o.flags = flags
+            self.constructed[class.class] = (self.constructed[class.class] or 0) + 1
             function o:MapKey(action, key) self.action = action; self.key = key end
+            function o:UnmapAll() self.action, self.key = nil, nil end
             return o
         end
         local function own(id) check(id == session.id, "cross-session native call") end
@@ -347,6 +350,46 @@ cases["native lifetime fault invalidates weak handles and is reported"] = functi
     check(handle:get() == nil, "a faulted service must not vouch for objects")
     local none, why = s.api.lifetimes.takeLost()
     check(none == nil and why:find("overflow", 1, true))
+end
+
+cases["helper contexts are rooted, re-applied and reused"] = function()
+    local f = fixture()
+    local s = f:loadSession()
+    local scope = s:open()
+    local first = check(scope:Bind("A", s.api.Helpers.Trigger.Tap, function() end))
+    local context = next(f.contexts)
+    check(context.flags == 0xC0, "private contexts must be rooted at construction")
+    f.contexts = {} -- The game clears its mappings.
+    check(scope:Refresh())
+    check(f.contexts[context], "Refresh re-applies the cleared context")
+    check(scope:Refresh() and f.contexts[context], "Refresh is idempotent")
+    check(scope:Unbind(first))
+    check(context.action == nil, "an unbound context is emptied")
+    check(scope:Bind("B", s.api.Helpers.Trigger.Tap, function() end))
+    check(f.contexts[context] and f.constructed.InputMappingContext == 1,
+        "a recycled context is reused instead of rooting another")
+    check(s.cleanup())
+end
+
+cases["a freed subsystem is never dereferenced"] = function()
+    local f = fixture()
+    local reads = 0
+    f.subsystem.address = 900
+    function f.subsystem:GetAddress() return self.address end
+    local s = f:loadSession()
+    local scope = s:open()
+    check(scope:Bind("A", s.api.Helpers.Trigger.Tap, function() end))
+    -- The subsystem is freed without a valid=false phase.
+    f.dead[900] = true
+    for _, method in ipairs({ "IsValid", "GetAddress", "AddMappingContext", "RemoveMappingContext" }) do
+        f.subsystem[method] = function() reads = reads + 1; error("freed subsystem read") end
+    end
+    f.contexts = {}
+    local refreshed, why = scope:Refresh()
+    check(not refreshed and why:find("no longer live", 1, true))
+    check(s.cleanup())
+    check(reads == 0, "the freed subsystem was read")
+    f:empty()
 end
 
 cases["off-thread helper shutdown refuses mutation and permits retry"] = function()

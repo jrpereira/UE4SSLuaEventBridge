@@ -74,8 +74,15 @@ function StaticFindObject(path)
     return classes[path] or object("Missing", path)
 end
 
+local contextsConstructed = 0
 function StaticConstructObject(class, outer, _name, flags)
-    expect(flags == 0x40, "generated objects must be transient")
+    -- Private contexts are rooted so a game-side mapping clear cannot collect them.
+    if class.class_name == "InputMappingContext" then
+        expect(flags == 0xC0, "private contexts must be transient and rooted")
+        contextsConstructed = contextsConstructed + 1
+    else
+        expect(flags == 0x40, "generated objects must be transient")
+    end
     nextObject = nextObject + 1
     local generated = object(class.class_name, "/Engine/Transient.Generated_" .. nextObject)
     generated.outer = outer
@@ -83,6 +90,11 @@ function StaticConstructObject(class, outer, _name, flags)
         function generated:MapKey(action, key)
             self.action = action
             self.key = key
+        end
+        function generated:UnmapAll()
+            self.action = nil
+            self.key = nil
+            self.unmapped = (self.unmapped or 0) + 1
         end
     end
     return generated

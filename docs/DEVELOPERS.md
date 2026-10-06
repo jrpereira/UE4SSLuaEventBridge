@@ -187,6 +187,10 @@ its share.
 Every Lua mod receives an isolated `UE4SSLuaEventBridge` table after its Lua state starts. Target and
 subscription handles belong to the Lua session that created them.
 
+The `UE4SSLuaEventBridge_*` globals are the native entry points behind this
+table. They are internal: call the table's methods instead. Session isolation is
+cooperative, since the native side trusts the session ID the table passes.
+
 ### `OpenInputComponent(componentPath)`
 
 ```lua
@@ -390,6 +394,13 @@ Boolean Input Action, Tap or Hold trigger, key mapping, and native `Triggered`
 subscription. A private context per binding makes removal independent and
 avoids mutating a context that is already active.
 
+Private contexts are created rooted (`RF_MarkAsRootSet`), so a game that clears
+its mappings cannot get them garbage-collected while a scope still uses them.
+Rooted contexts are never released: unbinding empties a context and keeps it
+for the next `Bind`, so the number of rooted contexts stays at the peak number
+of live bindings. Generated actions and triggers are not rooted. The subsystem
+is held through a [weak handle](#weak-handles) when lifetimes are available.
+
 Generated actions default to `bConsumeInput = false`, so Tap and Hold actions
 on the same key can both be evaluated and the helper does not intentionally
 consume the game's mapping.
@@ -466,6 +477,19 @@ step fails, ownership is retained so a later game-thread call can retry it.
 Call `Close()` on the game thread before reload or shutdown. See
 [session cleanup](#session-cleanup-and-rebinding) for automatic cleanup limits.
 
+### `input:Refresh()`
+
+```lua
+local refreshed, err = input:Refresh()
+```
+
+Re-applies the scope's private mapping contexts. Games can remove every mapping
+context, for example through `ClearAllMappings` during a map load; the helper's
+bindings then stop firing until their contexts are applied again. Call
+`Refresh()` on the game thread after such a clear, such as from a hook on the
+game's mapping rebuild. Re-applying a context that is still applied is harmless.
+It returns `false, err` when the subsystem is no longer live.
+
 ## Complete Tap/Hold example
 
 The [sample entry point](../examples/EnhancedInputTapHold/Scripts/main.lua)
@@ -494,6 +518,10 @@ If helper cleanup fails, native removal preserves targets for retry and clears
 obsolete subscription handles when removal succeeds. Retry `Close()` or
 `UnbindAll()` to finish cleanup. Failed attempts do not resume delivery.
 
+A callback that raises an error disables its binding. The bridge writes the
+action, phase and error to UE4SS.log, and also reports a delivery fault when a
+handler is registered.
+
 Deactivation rejects queued callbacks but cannot preempt a callback already
 executing. Consumers that schedule additional work must also check their own
 lifecycle state before that work runs. See [target delivery faults](#opt-in-target-delivery-faults)
@@ -505,6 +533,8 @@ Close scopes explicitly on the game thread before stopping or reloading Lua.
 A game-thread Lua stop also attempts helper cleanup. An off-thread stop disables
 callbacks and defers native binding removal until the next game-thread bridge
 operation, but cannot remove helper mapping contexts after the Lua state dies.
+Those contexts stay applied and rooted. Their actions do not consume input
+unless `consume_input` was set, so they do not block the game's own mappings.
 Cleanup is a lifecycle operation, not a farewell wish.
 
 Callback closures live in Lua-owned tables and are released on bind failure,
