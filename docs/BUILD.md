@@ -31,7 +31,7 @@ Expected output:
 ```text
 build\dist\_ModCore_UE4SSLuaEventBridge\dlls\main.dll
 build\dist\_ModCore_UE4SSLuaEventBridge\dlls\main.json
-build\dist\_ModCore_UE4SSLuaEventBridge\dlls\versions\UE4SSLuaEventBridge-1.0.7.dll
+build\dist\_ModCore_UE4SSLuaEventBridge\dlls\versions\UE4SSLuaEventBridge-1.0.8.dll
 ```
 
 The repository contains two CMake projects. `bootstrap` builds `main.dll` with
@@ -57,8 +57,14 @@ bootstrap and selected implementation and creating the archive.
 `dlls/main.json` contains schema 1 and either an exact three-part version or
 `auto`. Exact selection never falls back. Automatic selection scans only
 `dlls/versions`, rejects metadata and compatibility mismatches without loading
-them, and loads the highest compatible candidate. Changing selection requires a
-complete UE4SS unload or process restart.
+them, and tries the compatible candidates from newest to oldest: one that fails
+to load, fails the private ABI check, or does not start is unloaded and the next
+is tried. Changing selection requires a complete UE4SS unload or process
+restart.
+
+The bootstrap writes its decisions, including the implementation it started,
+to UE4SS.log as well as the debugger. It resolves UE4SS's output function at
+runtime and keeps no link-time dependency on UE4SS.
 
 If native Unreal objects still depend on implementation code during teardown,
 the implementation reports that condition to the bootstrap. The bootstrap keeps

@@ -17,6 +17,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace
@@ -27,12 +28,40 @@ std::mutex implementation_mutex;
 HANDLE bootstrap_claim{};
 int bootstrap_address_marker{};
 
+using UE4SSOutputSend = void (*)(std::wstring_view);
+
+// UE4SS's output (UE4SS.log), resolved at runtime so the bootstrap keeps no
+// link-time dependency on a particular UE4SS build.
+UE4SSOutputSend ue4ss_output()
+{
+    static const auto send = [] {
+        const auto module = GetModuleHandleW(L"UE4SS.dll");
+        const auto address = module
+            ? GetProcAddress(module, "?send@Output@RC@@YAXV?$basic_string_view@_WU?$char_traits@_W@std@@@std@@@Z")
+            : nullptr;
+        return reinterpret_cast<UE4SSOutputSend>(reinterpret_cast<void*>(address));
+    }();
+    return send;
+}
+
 void log(std::string_view message)
 {
     std::string line{"[UE4SSLuaEventBridge bootstrap] "};
     line.append(message);
     line.push_back('\n');
     OutputDebugStringA(line.c_str());
+    const auto send = ue4ss_output();
+    if (!send) return;
+    try
+    {
+        std::wstring wide;
+        wide.reserve(line.size());
+        for (const char c : line) wide.push_back(static_cast<wchar_t>(static_cast<unsigned char>(c)));
+        send(wide);
+    }
+    catch (...)
+    {
+    }
 }
 
 std::filesystem::path bootstrap_file()
@@ -170,8 +199,8 @@ UE4SSLEB_BOOTSTRAP_API void* start_mod()
         return nullptr;
     }
     const auto candidates = discover(file.parent_path() / L"versions");
-    const auto* selected = select_candidate(candidates, config.exact_version);
-    if (!selected)
+    const auto order = candidate_order(candidates, config.exact_version);
+    if (order.empty())
     {
         log(config.exact_version ? "configured implementation is unavailable or incompatible"
                                  : "no compatible implementation was discovered");
@@ -179,46 +208,50 @@ UE4SSLEB_BOOTSTRAP_API void* start_mod()
         bootstrap_claim = nullptr;
         return nullptr;
     }
-    auto* module = LoadLibraryExW(
-        selected->path.c_str(), nullptr,
-        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
-    if (!module)
+    for (const auto* candidate : order)
     {
-        log("selected implementation could not be loaded");
-        CloseHandle(bootstrap_claim);
-        bootstrap_claim = nullptr;
-        return nullptr;
+        const auto version = version_text(candidate->version);
+        auto* module = LoadLibraryExW(
+            candidate->path.c_str(), nullptr,
+            LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+        if (!module)
+        {
+            log("implementation " + version + " could not be loaded");
+            continue;
+        }
+        const auto get_api = reinterpret_cast<UE4SSLEB_GetImplementationV1Fn>(
+            GetProcAddress(module, "UE4SSLEB_GetImplementationV1"));
+        const auto* api = get_api ? get_api() : nullptr;
+        if (!descriptor_matches(api, candidate->version))
+        {
+            log("implementation " + version + " failed its private ABI check");
+            FreeLibrary(module);
+            continue;
+        }
+        void* mod{};
+        try
+        {
+            mod = api->start();
+            if (!mod) log("implementation " + version + " did not start");
+        }
+        catch (...)
+        {
+            log("implementation " + version + " threw during startup");
+        }
+        if (!mod)
+        {
+            FreeLibrary(module);
+            continue;
+        }
+        implementation_module = module;
+        implementation_api = api;
+        log("started implementation " + version +
+            (candidate == order.front() ? std::string{} : std::string{" after newer versions failed"}));
+        return mod;
     }
-    const auto get_api = reinterpret_cast<UE4SSLEB_GetImplementationV1Fn>(
-        GetProcAddress(module, "UE4SSLEB_GetImplementationV1"));
-    const auto* api = get_api ? get_api() : nullptr;
-    if (!descriptor_matches(api, selected->version))
-    {
-        log("selected implementation failed its private ABI check");
-        FreeLibrary(module);
-        CloseHandle(bootstrap_claim);
-        bootstrap_claim = nullptr;
-        return nullptr;
-    }
-    void* mod{};
-    try
-    {
-        mod = api->start();
-    }
-    catch (...)
-    {
-        log("selected implementation threw during startup");
-    }
-    if (!mod)
-    {
-        FreeLibrary(module);
-        CloseHandle(bootstrap_claim);
-        bootstrap_claim = nullptr;
-        return nullptr;
-    }
-    implementation_module = module;
-    implementation_api = api;
-    return mod;
+    CloseHandle(bootstrap_claim);
+    bootstrap_claim = nullptr;
+    return nullptr;
 }
 
 UE4SSLEB_BOOTSTRAP_API void uninstall_mod(void* mod)

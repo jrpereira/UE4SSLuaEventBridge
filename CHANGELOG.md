@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.0.8
 
 - Add `lifetimes.weak(object)` handles. `get()` returns the wrapper only while
   its native lifetime is valid, so a wrapper kept past garbage collection is
@@ -19,6 +19,11 @@
 - Reference-count lifetime observations. `lifetimes.release(token)` and weak
   handle `release()` or collection end an observation without a reported loss
   once no capture holds it.
+- Fall back in the bootstrap to the next compatible implementation, newest
+  first, when automatic selection's choice fails to load, fails its ABI check,
+  or does not start. Exact pins still never fall back.
+- Write bootstrap selection decisions and failures to UE4SS.log, resolving
+  UE4SS's output at runtime without a link-time dependency.
 - Write native diagnostics to UE4SS.log as well as the debugger: probe outcome,
   legacy-folder migration, Lua-stop cleanup, loop-start and delivery-fault
   handler failures.

@@ -47,6 +47,17 @@ int main()
     assert(pinned && pinned->path == "two.dll");
     assert(!select_candidate(candidates, SemanticVersion{2, 0, 0}));
 
+    // Automatic selection falls back through every version, newest first.
+    const auto fallback = candidate_order(candidates, std::nullopt);
+    assert(fallback.size() == 3 && fallback[0]->path == "three.dll" &&
+           fallback[1]->path == "two.dll" && fallback[2]->path == "one.dll");
+    // An exact pin never falls back.
+    const auto exact_order = candidate_order(candidates, SemanticVersion{1, 0, 7});
+    assert(exact_order.size() == 1 && exact_order[0]->path == "two.dll");
+    assert(candidate_order(candidates, SemanticVersion{2, 0, 0}).empty());
+    assert(candidate_order({}, std::nullopt).empty());
+    assert(version_text({1, 0, 8}) == "1.0.8");
+
     CandidateMetadata metadata{
         {1, 0, 7}, L"UE4SSLuaEventBridge-1.0.7.dll", L"UE4SSLuaEventBridge-1.0.7.dll",
         L"UE4SSLuaEventBridge", L"Implementation", L"1", L"97b7e501", L"5.5"};

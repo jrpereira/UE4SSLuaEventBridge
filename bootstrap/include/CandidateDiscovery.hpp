@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <charconv>
 #include <compare>
 #include <cstdint>
@@ -93,15 +94,36 @@ inline bool compatible_candidate(const CandidateMetadata& metadata)
            same_candidate_name(metadata.original_filename, expected);
 }
 
+inline std::string version_text(const SemanticVersion& version)
+{
+    return std::to_string(version.major) + "." + std::to_string(version.minor) + "." +
+           std::to_string(version.patch);
+}
+
+// Candidates to try in order. Automatic selection tries every compatible
+// version, newest first, so one that fails to load falls back to the next.
+// An exact pin yields only that version and never falls back.
+inline std::vector<const BootstrapCandidate*> candidate_order(
+    const std::vector<BootstrapCandidate>& candidates,
+    const std::optional<SemanticVersion>& exact)
+{
+    std::vector<const BootstrapCandidate*> ordered;
+    for (const auto& candidate : candidates)
+    {
+        if (exact && candidate.version != *exact) continue;
+        ordered.push_back(&candidate);
+    }
+    std::stable_sort(ordered.begin(), ordered.end(), [](const auto* left, const auto* right) {
+        return left->version > right->version;
+    });
+    if (exact && ordered.size() > 1) ordered.resize(1);
+    return ordered;
+}
+
 inline const BootstrapCandidate* select_candidate(
     const std::vector<BootstrapCandidate>& candidates,
     const std::optional<SemanticVersion>& exact)
 {
-    const BootstrapCandidate* selected{};
-    for (const auto& candidate : candidates)
-    {
-        if (exact && candidate.version != *exact) continue;
-        if (!selected || candidate.version > selected->version) selected = &candidate;
-    }
-    return selected;
+    const auto ordered = candidate_order(candidates, exact);
+    return ordered.empty() ? nullptr : ordered.front();
 }
