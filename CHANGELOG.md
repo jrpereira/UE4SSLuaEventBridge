@@ -2,6 +2,8 @@
 
 ## v1.0.8
 
+### Changes
+
 - Add `lifetimes.weak(object)` handles. `get()` returns the wrapper only while
   its native lifetime is valid, so a wrapper kept past garbage collection is
   never dereferenced; off the game thread it fails without forgetting the
