@@ -44,6 +44,64 @@ def violations(path, data, allowed=()):
 def git(root, *args):
     return subprocess.check_output(["git", "-C", str(root), *args])
 
+# repository-policy.json "vendored" maps each file copied from another repository to its
+# owner: {"Scripts/vendor/mc_log.lua": "ModCoreSettings"}. A copy keeps its owner's path
+# and starts with the owner header; an owner lists its own sources the same way.
+VENDOR_HEADER = "Vendored from {owner} (owner). Do not edit copies; change the source and re-vendor."
+VENDOR_COMMENTS = {".lua": "--", ".py": "#", ".sh": "#", ".ps1": "#"}
+OWNER = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+def vendor_header(path, owner):
+    prefix = VENDOR_COMMENTS.get(PurePosixPath(path).suffix.lower())
+    return prefix and f"{prefix} " + VENDOR_HEADER.format(owner=owner)
+
+def vendored_list(policy):
+    vendored = policy.get("vendored", {})
+    if not isinstance(vendored, dict) or not all(
+            isinstance(p, str) and isinstance(o, str) and OWNER.match(o) for p, o in vendored.items()):
+        raise ValueError("repository-policy.json vendored must map paths to owner repository names")
+    return vendored
+
+def vendored_violations(tree, vendored, contents):
+    """Listed copies exist and name their owner first; vendor folders hold only listed copies."""
+    failures = []
+    for path, owner in sorted(vendored.items()):
+        oid = tree.get(path)
+        header = vendor_header(path, owner)
+        if oid is None:
+            failures.append(f"{path}: listed as vendored but missing")
+        elif not header:
+            failures.append(f"{path}: vendored file type has no known comment syntax")
+        elif contents[oid].split(b"\n", 1)[0].rstrip(b"\r").decode("utf-8", "replace") != header:
+            failures.append(f'{path}: vendored file must start with "{header}"')
+    for path in tree:
+        if "vendor" in PurePosixPath(path).parts[:-1] and path not in vendored:
+            failures.append(f"{path}: vendor folder file is not listed in repository-policy.json vendored")
+    return failures
+
+def vendored_drift(root, revision):
+    """Copies that differ from their owner's committed file, where the owner's checkout is a
+    sibling of this one. CI has no siblings, so this runs locally only."""
+    root = Path(root).resolve()
+    tree = dict(entries(root, revision))
+    policy = tree.get("repository-policy.json")
+    if policy is None:
+        return []
+    vendored = vendored_list(json.loads(blobs(root, [policy])[policy]))
+    contents = blobs(root, [tree[path] for path in vendored if path in tree])
+    failures = []
+    for path, owner in sorted(vendored.items()):
+        source = root.parent / owner
+        if owner == root.name or path not in tree or not (source / ".git").exists():
+            continue
+        shown = subprocess.run(["git", "-C", str(source), "show", f"HEAD:{path}"],
+                               capture_output=True)
+        if shown.returncode != 0:
+            failures.append(f"{path}: {owner} has no committed {path}")
+        elif shown.stdout != contents[tree[path]]:
+            failures.append(f"{path}: differs from {owner} HEAD; copy ../{owner}/{path} unchanged")
+    return failures
+
 def entries(root, revision):
     if revision == ":index":
         raw = git(root, "ls-files", "--stage", "-z")
@@ -96,12 +154,19 @@ def check(root, revisions, allowed=None):
     seen = set()
     trees = {rev: dict(entries(root, rev)) for rev in revisions}
     policies = blobs(root, [tree['repository-policy.json'] for tree in trees.values() if 'repository-policy.json' in tree])
-    pending = []
+    pending, listed = [], []
     for revision, tree in trees.items():
+        policy = tree.get('repository-policy.json')
+        data = json.loads(policies[policy]) if policy else {}
         revision_allowed = allowed
         if revision_allowed is None:
-            policy = tree.get('repository-policy.json')
-            revision_allowed = json.loads(policies[policy])['allowed_paths'] if policy else ['distribution/config.ini']
+            revision_allowed = data['allowed_paths'] if policy else ['distribution/config.ini']
+        try:
+            vendored = vendored_list(data)
+        except ValueError as error:
+            failures.append(f"{revision}: repository-policy.json: {error}")
+            vendored = {}
+        listed.append((revision, tree, vendored))
         for path, oid in tree.items():
             key = (path, oid, tuple(sorted(revision_allowed)))
             if key in seen:
@@ -112,10 +177,14 @@ def check(root, revisions, allowed=None):
                 failures.append(f"{revision}: {path}: {reason}")
             if not reasons:
                 pending.append((revision, path, oid, revision_allowed))
-    contents = blobs(root, [item[2] for item in pending])
+    contents = blobs(root, [item[2] for item in pending]
+                     + [tree[p] for _, tree, vendored in listed for p in vendored if p in tree])
     for revision, path, oid, revision_allowed in pending:
         for reason in violations(path, contents[oid], revision_allowed):
             failures.append(f"{revision}: {path}: {reason}")
+    for revision, tree, vendored in listed:
+        for reason in vendored_violations(tree, vendored, contents):
+            failures.append(f"{revision}: {reason}")
     return failures
 
 def main():
@@ -125,6 +194,9 @@ def main():
     group.add_argument("--staged", action="store_true")
     group.add_argument("--range", dest="commit_range")
     group.add_argument("--revision", default="HEAD")
+    parser.add_argument("--copies", action="store_true",
+                        help="also compare vendored copies with owners checked out beside this repository "
+                             "(always on with --staged)")
     args = parser.parse_args()
     if args.staged:
         revisions = [":index"]
@@ -133,6 +205,8 @@ def main():
     else:
         revisions = [args.revision]
     failures = check(args.root, revisions)
+    if args.staged or (args.copies and not args.commit_range):
+        failures += vendored_drift(args.root, revisions[0])
     print("\n".join(failures) if failures else "Repository hygiene passed")
     return int(bool(failures))
 

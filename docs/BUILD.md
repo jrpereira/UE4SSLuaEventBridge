@@ -192,6 +192,8 @@ before retained Lua session storage is released.
 
 ### Deliberate exclusions
 
+These apply to the Enhanced Input bridge:
+
 - no player-controller or pawn discovery;
 - no listener-driven Lua callback or automatic object discovery;
 - no `ProcessEvent` hook;

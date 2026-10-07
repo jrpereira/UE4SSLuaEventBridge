@@ -319,6 +319,50 @@ cases["weak handles return their observation when released or collected"] = func
     check(s.api.lifetimes.release(token) and not s.api.lifetimes.release(token))
 end
 
+-- Consumers test against tests/support/lifetimes.lua; it must answer as bridge_api.lua does.
+-- lifetimes: a lifetimes table; make(address) a live object; kill(object) ends its life;
+-- thread(on) moves on or off the game thread.
+local function weakHandleContract(lifetimes, make, kill, thread)
+    local none, why = lifetimes.weak(nil)
+    check(none == nil and why:find("live UE4SS UObject wrapper", 1, true), "nil accepted")
+    local o = make(720)
+    local handle = check(lifetimes.weak(o))
+    check(handle:get() == o and handle:get() == o, "get must return the same live wrapper")
+    local token, address = handle:identity()
+    check(type(token) == "string" and address == 720, "identity is the token and address")
+    check(lifetimes.captureObject(o) == token, "capture and handle share the token")
+    check(getmetatable(handle) == false, "handle internals must be private")
+    thread(false)
+    local value, readWhy = handle:get()
+    check(value == nil and readWhy:find("game thread", 1, true), "off-thread read must fail")
+    none, why = lifetimes.weak(o)
+    check(none == nil and why:find("game thread", 1, true), "off-thread creation must fail")
+    thread(true)
+    check(handle:get() == o, "an off-thread read must not forget a live object")
+    local second = check(lifetimes.weak(o))
+    second:release(); second:release()
+    check(second:get() == nil and handle:get() == o, "release forgets only its own handle")
+    kill(o)
+    check(handle:get() == nil and handle:identity() == token, "a dead object is not returned")
+    none = lifetimes.weak(o)
+    check(none == nil and lifetimes.captureObject(o) == nil, "a dead object is not captured")
+end
+
+cases["the vendored test double answers as the weak-handle API does"] = function()
+    local f = fixture()
+    local s = f:loadSession()
+    weakHandleContract(s.api.lifetimes, trackedObject,
+        function(o) f.dead[o.address], o.freed = true, true end,
+        function(on) f.gameThread = on end)
+    local dead = {}
+    local double = dofile("tests/support/lifetimes.lua").service(function(o) return not dead[o] end)
+    weakHandleContract(double,
+        function(address) return { GetAddress = function() return address end } end,
+        function(o) dead[o] = true end,
+        function(on) double.gameThread = on end)
+    check(double.held == 1, "held counts unreleased handles")
+end
+
 cases["weak handle creation rejects dead wrappers"] = function()
     local f = fixture()
     local s = f:loadSession()

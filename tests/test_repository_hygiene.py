@@ -66,5 +66,63 @@ class HygieneTests(unittest.TestCase):
             self.assertEqual(pushed.returncode, 1, pushed.stdout+pushed.stderr)
             self.assertIn('config.ini', pushed.stdout)
 
+    def repository(self, root):
+        root.mkdir()
+        def git(*args):
+            return hygiene.git(root, *args)
+        git("init", "-q")
+        git("config", "user.name", "Test")
+        git("config", "user.email", "test@example.invalid")
+        return git
+
+    def test_vendored_copies_are_listed_and_name_their_owner(self):
+        header = "-- Vendored from Owner (owner). Do not edit copies; change the source and re-vendor.\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Consumer"
+            git = self.repository(root)
+            (root / "Scripts/vendor").mkdir(parents=True)
+            (root / "Scripts/vendor/a.lua").write_text(header + "return {}\n")
+            (root / "repository-policy.json").write_text(
+                '{"allowed_paths": [], "vendored": {"Scripts/vendor/a.lua": "Owner"}}')
+            git("add", ".")
+            self.assertFalse(hygiene.check(root, [":index"]))
+            (root / "Scripts/vendor/a.lua").write_text("-- edited\n")
+            (root / "Scripts/vendor/b.lua").write_text(header)
+            git("add", ".")
+            failures = "\n".join(hygiene.check(root, [":index"]))
+            self.assertIn("a.lua: vendored file must start with", failures)
+            self.assertIn("b.lua: vendor folder file is not listed", failures)
+            (root / "repository-policy.json").write_text(
+                '{"allowed_paths": [], "vendored": {"Scripts/vendor/a.lua": "Owner", "tests/c.lua": "Owner"}}')
+            git("add", ".")
+            self.assertIn("tests/c.lua: listed as vendored but missing", "\n".join(hygiene.check(root, [":index"])))
+            (root / "repository-policy.json").write_text('{"allowed_paths": [], "vendored": ["a.lua"]}')
+            git("add", ".")
+            self.assertIn("vendored must map paths", "\n".join(hygiene.check(root, [":index"])))
+
+    def test_vendored_copies_match_a_sibling_owner(self):
+        header = "-- Vendored from Owner (owner). Do not edit copies; change the source and re-vendor.\n"
+        policy = '{"allowed_paths": [], "vendored": {"Scripts/vendor/a.lua": "Owner"}}'
+        with tempfile.TemporaryDirectory() as tmp:
+            owner, consumer = Path(tmp) / "Owner", Path(tmp) / "Consumer"
+            for root in (owner, consumer):
+                git = self.repository(root)
+                (root / "Scripts/vendor").mkdir(parents=True)
+                (root / "Scripts/vendor/a.lua").write_text(header + "return 1\n")
+                (root / "repository-policy.json").write_text(policy)
+                git("add", ".")
+                git("commit", "-qm", "baseline")
+            self.assertFalse(hygiene.vendored_drift(consumer, ":index"))
+            self.assertFalse(hygiene.vendored_drift(owner, ":index"), "an owner never compares with itself")
+            (owner / "Scripts/vendor/a.lua").write_text(header + "return 2\n")
+            self.assertFalse(hygiene.vendored_drift(consumer, ":index"), "only the owner's commits count")
+            hygiene.git(owner, "commit", "-qam", "change source")
+            self.assertIn("differs from Owner HEAD", "\n".join(hygiene.vendored_drift(consumer, ":index")))
+            (consumer / "Scripts/vendor/a.lua").write_text(header + "return 2\n")
+            hygiene.git(consumer, "add", ".")
+            self.assertFalse(hygiene.vendored_drift(consumer, ":index"))
+            (owner / ".git").rename(owner / "git-moved")
+            self.assertFalse(hygiene.vendored_drift(consumer, ":index"), "without the owner's checkout nothing is compared")
+
 if __name__ == "__main__":
     unittest.main()
