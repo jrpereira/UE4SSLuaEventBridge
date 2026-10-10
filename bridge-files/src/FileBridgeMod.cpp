@@ -18,6 +18,7 @@
 #include <dispatch/DispatchBudget.hpp>
 #include <dispatch/QueueDispatchSchedule.hpp>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -47,8 +48,6 @@ using UE4SSLuaFileBridge::Core::TargetKind;
 namespace Contract = UE4SSLuaFileBridge::NativeContract;
 namespace Core = UE4SSLuaFileBridge::Core;
 namespace Win32 = UE4SSLuaFileBridge::Win32;
-
-constexpr std::size_t tail_read_bytes_per_pass = 64 * 1024;
 
 void report(std::string_view message)
 {
@@ -459,6 +458,7 @@ private:
         "UE4SSLFB_MAX_DISPATCH_US", Contract::default_max_dispatch_us, 1000000)};
     std::atomic_uint64_t delivered_{0};
     std::atomic_uint64_t budget_exhausted_passes_{0};
+    int64_t last_polled_subscription_{0}; // on_update only
 
     void register_natives(Lua& lua);
 
@@ -525,44 +525,53 @@ private:
         session.subscriptions.erase(subscription.id);
     }
 
+    // Reads at most Contract::tail_read_bytes_per_pass in total, at most
+    // tail_read_bytes_per_subscription from each file, going round-robin by
+    // subscription id from where the previous pass stopped.
     void collect_tail_deliveries()
     {
-        std::vector<std::shared_ptr<Session>> sessions;
+        std::vector<std::pair<std::shared_ptr<Session>, std::shared_ptr<Subscription>>> all;
         {
             std::scoped_lock lock(sessions_mutex_);
             for (auto& [_, session] : sessions_)
             {
-                if (session->active.load()) sessions.push_back(session);
+                if (!session->active.load()) continue;
+                std::scoped_lock session_lock(session->mutex);
+                for (auto& [__, subscription] : session->subscriptions) all.emplace_back(session, subscription);
             }
         }
+        if (all.empty()) return;
+        std::sort(all.begin(), all.end(), [](const auto& a, const auto& b) { return a.second->id < b.second->id; });
+        std::size_t start = 0;
+        while (start < all.size() && all[start].second->id <= last_polled_subscription_) ++start;
+        if (start == all.size()) start = 0;
+
         std::vector<Pending> batch;
         const auto now = std::chrono::steady_clock::now();
-        for (auto& session : sessions)
+        auto remaining = static_cast<std::size_t>(Contract::tail_read_bytes_per_pass);
+        for (std::size_t step = 0; step < all.size() && remaining > 0; ++step)
         {
-            std::vector<std::shared_ptr<Subscription>> subscriptions;
+            auto& [session, subscription] = all[(start + step) % all.size()];
+            last_polled_subscription_ = subscription->id;
+            if (!subscription->open.load()) continue;
+            std::vector<Core::TailDelivery> out;
+            std::size_t consumed = 0;
+            const auto allowance =
+                std::min(remaining, static_cast<std::size_t>(Contract::tail_read_bytes_per_subscription));
+            auto polled = subscription->file->poll(out, allowance, now, consumed);
+            remaining -= std::min(consumed, remaining);
+            for (auto& delivery : out)
             {
-                std::scoped_lock lock(session->mutex);
-                for (auto& [_, subscription] : session->subscriptions) subscriptions.push_back(subscription);
+                batch.push_back(Pending{session, subscription, Contract::DispatchKind::data, std::move(delivery.text),
+                    delivery.offset, delivery.flags});
             }
-            for (auto& subscription : subscriptions)
+            if (!polled)
             {
-                if (!subscription->open.load()) continue;
-                std::vector<Core::TailDelivery> out;
-                std::size_t consumed = 0;
-                auto polled = subscription->file->poll(out, tail_read_bytes_per_pass, now, consumed);
-                for (auto& delivery : out)
-                {
-                    batch.push_back(Pending{session, subscription, Contract::DispatchKind::data, std::move(delivery.text),
-                        delivery.offset, delivery.flags});
-                }
-                if (!polled)
-                {
-                    const auto& failed = polled.failure();
-                    report(subscription->path + ": " + std::string(Contract::to_string(failed.code)) + " " + failed.message);
-                    close_subscription(*session, *subscription);
-                    batch.push_back(Pending{session, subscription, Contract::DispatchKind::closed,
-                        std::string(Contract::to_string(failed.code)) + "\t" + failed.message, 0, 0});
-                }
+                const auto& failed = polled.failure();
+                report(subscription->path + ": " + std::string(Contract::to_string(failed.code)) + " " + failed.message);
+                close_subscription(*session, *subscription);
+                batch.push_back(Pending{session, subscription, Contract::DispatchKind::closed,
+                    std::string(Contract::to_string(failed.code)) + "\t" + failed.message, 0, 0});
             }
         }
         if (batch.empty()) return;
