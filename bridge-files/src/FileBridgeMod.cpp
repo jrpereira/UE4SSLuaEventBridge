@@ -498,7 +498,7 @@ private:
 
     // Temporary siblings ("<name>.xbtmp-<pid>-<n>") left by an earlier process
     // that stopped mid-write, under ModData folders with an .owner marker.
-    // Leftovers elsewhere (mod folders, savegames) are left alone in 0.1.0.
+    // Leftovers elsewhere (mod folders, savegames) are left alone in 1.0.1.
     void remove_stale_temp_siblings(const std::string& base)
     {
         const auto current = Win32::process_id();

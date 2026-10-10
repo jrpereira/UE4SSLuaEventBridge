@@ -274,7 +274,7 @@
 // <user>/Saved/ModData/* folder that has an `.owner` marker.
 
 // ---------------------------------------------------------------------------
-// 8. Known limitations (0.1.0)
+// 8. Known limitations (1.0.1)
 // ---------------------------------------------------------------------------
 // * Results are pushed to Lua after the native's error handling: if Lua runs
 //   out of memory while receiving one (a read near max_read_bytes), the error

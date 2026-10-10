@@ -100,7 +100,7 @@ end)
 
 test("GetVersion, GetCapabilities and GetDispatchStats", function(_, bridge)
     local env = bridge()
-    expect(bridge.GetVersion() == "0.1.0" and env.GetVersion() == "0.1.0" and env:GetVersion() == "0.1.0")
+    expect(bridge.GetVersion() == "1.0.1" and env.GetVersion() == "1.0.1" and env:GetVersion() == "1.0.1")
     local caps = bridge.GetCapabilities()
     expect(caps.api == 1 and caps.environments and caps.append_only and caps.streams and caps.tail)
     expect(caps.lock == false and caps.hash == false and caps.temp_file == false)

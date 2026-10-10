@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.1.0
+## v1.0.1
 
 First release of UE4SSLuaFileBridge, file and folder access for UE4SS Lua mods
 through a native bridge.

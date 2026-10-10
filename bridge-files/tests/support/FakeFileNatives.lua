@@ -83,7 +83,7 @@ function Fake.new()
 
     local impl = {}
 
-    function impl.GetVersion() return "0.1.0" end
+    function impl.GetVersion() return "1.0.1" end
     function impl.GetCapabilities() return 1, true, true, true, true, 67108864, "97b7e501" end
     function impl.GetDispatchStats() return 2, 1840, 3 end
     function impl.Locations()
