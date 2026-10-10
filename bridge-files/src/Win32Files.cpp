@@ -138,8 +138,11 @@ private:
 
 constexpr DWORD share_all = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
 
-Status write_all(HANDLE handle, std::string_view data, std::string_view operation, const std::string& path)
+// `total` receives the bytes written, also when it fails part-way.
+Status write_all(HANDLE handle, std::string_view data, std::string_view operation, const std::string& path,
+    std::size_t* total = nullptr)
 {
+    if (total) *total = 0;
     while (!data.empty())
     {
         const DWORD chunk = static_cast<DWORD>(std::min<std::size_t>(data.size(), 1u << 30));
@@ -147,6 +150,7 @@ Status write_all(HANDLE handle, std::string_view data, std::string_view operatio
         if (!WriteFile(handle, data.data(), chunk, &written, nullptr)) return last_failure(operation, path);
         if (written == 0) return Failure{ErrorCode::io, std::string(operation) + " " + path + ": nothing was written"};
         data.remove_prefix(written);
+        if (total) *total += written;
     }
     return Done{};
 }
@@ -763,6 +767,16 @@ Status Stream::write_through(std::string_view data)
     return write_all(static_cast<HANDLE>(handle_), data, "Write", path_);
 }
 
+// Writes the buffer; on failure only the bytes that reached the file are
+// dropped, so a later Flush or Close retries the rest without a gap.
+Status Stream::flush_buffer()
+{
+    std::size_t written = 0;
+    auto status = write_all(static_cast<HANDLE>(handle_), buffer_, "Write", path_, &written);
+    buffer_.erase(0, written);
+    return status;
+}
+
 Status Stream::write(std::string_view data)
 {
     std::scoped_lock lock(mutex_);
@@ -770,9 +784,8 @@ Status Stream::write(std::string_view data)
     if (!manual_flush_) return write_through(data);
     if (buffer_.size() + data.size() > static_cast<std::size_t>(NativeContract::stream_buffer_bytes))
     {
-        auto flushed = write_through(buffer_);
-        buffer_.clear();
-        if (!flushed) return flushed;
+        auto flushed = flush_buffer();
+        if (!flushed) return flushed; // `data` isn't taken; the buffer keeps what didn't reach the file
         if (data.size() >= static_cast<std::size_t>(NativeContract::stream_buffer_bytes)) return write_through(data);
     }
     buffer_.append(data);
@@ -783,16 +796,16 @@ Status Stream::flush()
 {
     std::scoped_lock lock(mutex_);
     if (!handle_) return Failure{ErrorCode::invalid, "stream is closed"};
-    auto flushed = write_through(buffer_);
-    buffer_.clear();
-    return flushed;
+    return flush_buffer();
 }
 
 Status Stream::close()
 {
     std::scoped_lock lock(mutex_);
     if (!handle_) return Done{};
-    Status flushed = buffer_.empty() ? Status{Done{}} : write_through(buffer_);
+    // Closing always releases the file; data that still can't be written is
+    // reported and then dropped with the stream.
+    Status flushed = buffer_.empty() ? Status{Done{}} : flush_buffer();
     buffer_.clear();
     CloseHandle(static_cast<HANDLE>(handle_));
     handle_ = nullptr;

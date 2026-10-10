@@ -127,6 +127,7 @@ public:
 private:
     Stream() = default;
     Status write_through(std::string_view data);
+    Status flush_buffer();
 
     std::mutex mutex_;
     void* handle_{};
