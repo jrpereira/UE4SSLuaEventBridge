@@ -61,6 +61,43 @@ class VersionResourceTests(unittest.TestCase):
             source = (ROOT / '.github/workflows' / workflow).read_text()
             self.assertIn('ci-package-product.ps1', source)
 
+    def test_event_bridge_bootstrap_keeps_its_identity(self):
+        call = (ROOT / 'bootstrap/CMakeLists.txt').read_text()
+        call = call[call.index('add_bridge_bootstrap('):]
+        call = call[:call.index('\n)')]
+        arguments = dict(re.findall(r'^\s+([A-Z_]+) ("[^"]*"|\S+)$', call, re.M))
+        arguments = {key: value.strip('"') for key, value in arguments.items()}
+        self.assertEqual(arguments['PRODUCT'], 'UE4SSLuaEventBridge')
+        self.assertEqual(arguments['TARGET'], 'UE4SSLEBBootstrap')
+        self.assertEqual(arguments['DISPLAY_NAME'], 'UE4SS Lua Event Bridge')
+        self.assertEqual(arguments['MAGIC'], '0x4C454231')
+        self.assertEqual(arguments['CLAIM_NAME'], 'UE4SSLEB')
+        self.assertEqual(arguments['DIST_FOLDER'], '0_ModCore_UE4SSLuaEventBridge')
+
+        template = (ROOT / 'bootstrap/resources/Version.rc.in').read_text()
+        rendered = (template
+            .replace('@BRIDGE_BOOTSTRAP_VERSION_MAJOR@', '1')
+            .replace('@BRIDGE_BOOTSTRAP_VERSION_MINOR@', '0')
+            .replace('@BRIDGE_BOOTSTRAP_VERSION_PATCH@', '12')
+            .replace('@BRIDGE_BOOTSTRAP_VERSION@', '1.0.12')
+            .replace('@BRIDGE_BOOTSTRAP_PRODUCT@', arguments['PRODUCT'])
+            .replace('@BRIDGE_BOOTSTRAP_DISPLAY_NAME@', arguments['DISPLAY_NAME'])
+            .replace('@BRIDGE_BOOTSTRAP_TARGET@', arguments['TARGET']))
+        self.assertNotIn('@', rendered)
+        for line in [
+            'FILEVERSION 1,0,12,0',
+            'PRODUCTVERSION 1,0,12,0',
+            'VALUE "CompanyName", "UE4SS Lua Event Bridge contributors\\0"',
+            'VALUE "FileDescription", "UE4SS Lua Event Bridge bootstrap\\0"',
+            'VALUE "FileVersion", "1.0.12.0\\0"',
+            'VALUE "InternalName", "UE4SSLEBBootstrap\\0"',
+            'VALUE "OriginalFilename", "main.dll\\0"',
+            'VALUE "ProductName", "UE4SSLuaEventBridge Bootstrap\\0"',
+            'VALUE "ProductVersion", "1.0.12\\0"',
+            'VALUE "BridgeRole", "Bootstrap\\0"',
+        ]:
+            self.assertIn(line, rendered)
+
 
 if __name__ == '__main__':
     unittest.main()
