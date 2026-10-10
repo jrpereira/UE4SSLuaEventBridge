@@ -36,7 +36,8 @@ Mods/
     │   ├── main.json
     │   └── versions/
     │       └── UE4SSLuaEventBridge-1.0.12.dll
-    └── enabled.txt
+    ├── enabled.txt
+    └── mod.json
 ```
 
 `main.dll` is a small bootstrap. It reads `dlls/main.json`, validates the
