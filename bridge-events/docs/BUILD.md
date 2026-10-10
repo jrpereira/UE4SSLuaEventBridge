@@ -35,7 +35,7 @@ build\dist\0_ModCore_UE4SSLuaEventBridge\dlls\versions\UE4SSLuaEventBridge-1.0.1
 ```
 
 The repository contains two CMake projects. `bootstrap` builds `main.dll` with
-no UE4SS link dependency. `bridge` builds the versioned implementation and owns
+no UE4SS link dependency. `bridge-events` builds the versioned implementation and owns
 the UE4SS, Unreal, input, Lua, and lifetime code. The root CMake project builds
 and assembles both.
 
@@ -229,8 +229,8 @@ bash tests/run-lua-tests.sh
 Without Bash, run both files directly:
 
 ```sh
-lua tests/LuaHelperTests.lua
-lua tests/LifecycleIntegrationTests.lua
+lua bridge-events/tests/LuaHelperTests.lua
+lua bridge-events/tests/LifecycleIntegrationTests.lua
 ```
 
 The build and release workflows invoke the same runner. A failed assertion
@@ -238,7 +238,7 @@ returns a nonzero exit code and fails the job.
 
 ### What is exercised
 
-The lifecycle suite loads the production `bridge/lua/bridge_api.lua` into isolated
+The lifecycle suite loads the production `bridge-events/lua/bridge_api.lua` into isolated
 Lua environments. Each reload receives a fresh session ID and callback registry,
 while its simulated engine retains shared context, target and subscription
 registries. Assertions cover cleanup ownership, error propagation, callback
