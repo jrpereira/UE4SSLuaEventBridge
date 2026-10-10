@@ -661,12 +661,6 @@ struct Context
         const auto* saves = checker.location_real("savegames");
         return saves && Core::is_within(real, *saves, &Win32::equal_fold) ? Core::backup_sibling(real) : std::string{};
     }
-
-    bool in_savegames(const std::string& real)
-    {
-        const auto* saves = checker.location_real("savegames");
-        return saves && Core::is_within(real, *saves, &Win32::equal_fold);
-    }
 };
 
 // Reads (session, policy) and builds the call context in `slot` (in place:
@@ -1040,13 +1034,10 @@ Reply stream_open(FileBridgeMod& bridge, Call& call)
     const bool truncate = (flags & Contract::OpenFlag::truncate) != 0;
     const bool create = (flags & Contract::OpenFlag::no_create) == 0;
     const bool manual = (flags & Contract::OpenFlag::manual_flush) != 0;
-    auto target = context.target("Open", path, truncate ? Access::write : Access::append, true);
+    // A truncating Open can't keep a .bak, so it bypasses the savegames backup (contract step 9).
+    auto target = context.target("Open", path, truncate ? Access::write : Access::append, true, truncate);
     if (!target) return failure(target.failure());
     const auto& real = target.value().real;
-    if (truncate && target.value().probe.kind == Win32::Kind::file && context.in_savegames(real))
-    {
-        return failure(ErrorCode::invalid, "Open " + path + ": savegames needs atomic writes that keep a .bak");
-    }
     auto prepared = bridge.prepare_moddata(*context.session, context.checker, real);
     if (!prepared) return failure(prepared.failure());
     auto parent = parent_exists("Open", real);
