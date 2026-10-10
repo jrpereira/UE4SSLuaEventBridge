@@ -1,10 +1,12 @@
-#include <SharedDispatch.hpp>
+#include <dispatch/QueueBuffers.hpp>
+#include <dispatch/DispatchBacklog.hpp>
+#include <dispatch/DispatchBudget.hpp>
 #include <barrier>
 #include <cassert>
 #include <memory>
 #include <thread>
 #include <mutex>
-using namespace UE4SSLuaEventBridge;
+using namespace UE4SSXB;
 // Real producer, consumer and observer threads, synchronized without sleeps.
 // Exercise production buffer transfer, backlog, budgets and count publication.
 void pending_count_lifecycle() {

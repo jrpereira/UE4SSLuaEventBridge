@@ -6,7 +6,7 @@ cd "${repo_root}"
 build_dir="$(mktemp -d)"
 trap 'rm -rf "${build_dir}"' EXIT
 
-c++ -std=c++20 -Wall -Wextra -Werror -Ibridge-events/include -Icontract -Ishared bridge-events/tests/DispatchBudgetTests.cpp -o "${build_dir}"/dispatch-budget-tests
+c++ -std=c++20 -Wall -Wextra -Werror -Ishared shared/dispatch/tests/DispatchBudgetTests.cpp -o "${build_dir}"/dispatch-budget-tests
 "${build_dir}"/dispatch-budget-tests
 
 c++ -std=c++20 -Wall -Wextra -Werror -pthread \
@@ -22,10 +22,10 @@ c++ -std=c++20 -Wall -Wextra -Werror -Ibridge-events/include -Icontract -Ishared
 c++ -std=c++20 -Wall -Wextra -Werror -Ibridge-events/include -Icontract -Ishared bridge-events/tests/WeakObjectPtrTests.cpp -o "${build_dir}"/weak-object-tests
 "${build_dir}"/weak-object-tests
 
-c++ -std=c++20 -Wall -Wextra -Werror -pthread -Ibridge-events/include -Icontract -Ishared bridge-events/tests/QueueBuffersTests.cpp -o "${build_dir}"/queue-buffer-tests
+c++ -std=c++20 -Wall -Wextra -Werror -pthread -Ishared shared/dispatch/tests/QueueBuffersTests.cpp -o "${build_dir}"/queue-buffer-tests
 "${build_dir}"/queue-buffer-tests
 
-c++ -std=c++20 -Wall -Wextra -Werror -Ibridge-events/include -Icontract -Ishared bridge-events/tests/QueueDispatchScheduleTests.cpp -o "${build_dir}"/queue-schedule-tests
+c++ -std=c++20 -Wall -Wextra -Werror -Ishared shared/dispatch/tests/QueueDispatchScheduleTests.cpp -o "${build_dir}"/queue-schedule-tests
 "${build_dir}"/queue-schedule-tests
 
 c++ -std=c++20 -Wall -Wextra -Werror -pthread -Ibridge-events/include -Icontract -Ishared bridge-events/tests/LifecycleRegistryTests.cpp -o "${build_dir}"/lifecycle-registry-tests

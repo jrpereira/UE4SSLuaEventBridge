@@ -5,11 +5,16 @@ $repo = Split-Path $PSScriptRoot
 Push-Location $repo
 try {
     New-Item -ItemType Directory -Force $OutputDirectory | Out-Null
-    foreach ($suite in @('QueueBuffersTests', 'NativeBackendLifecycleTests')) {
+    $sources = [ordered]@{
+        QueueBuffersTests = 'shared/dispatch/tests/QueueBuffersTests.cpp'
+        NativeBackendLifecycleTests = 'bridge-events/tests/NativeBackendLifecycleTests.cpp'
+    }
+    foreach ($suite in $sources.Keys) {
+        $source = $sources[$suite]
         $executable = Join-Path $OutputDirectory "$suite.exe"
         $object = Join-Path $OutputDirectory "$suite.obj"
         $symbols = Join-Path $OutputDirectory "$suite.pdb"
-        & cl /nologo /std:c++20 /EHsc /MD /Zi /fsanitize=address /W4 /WX /Ibridge-events/include /Icontract /Ishared "bridge-events/tests/$suite.cpp" "/Fe$executable" "/Fo$object" "/Fd$symbols"
+        & cl /nologo /std:c++20 /EHsc /MD /Zi /fsanitize=address /W4 /WX /Ibridge-events/include /Icontract /Ishared $source "/Fe$executable" "/Fo$object" "/Fd$symbols"
         if ($LASTEXITCODE -ne 0) { throw "AddressSanitizer $suite build failed" }
         & (Resolve-Path -LiteralPath $executable).Path
         if ($LASTEXITCODE -ne 0) { throw "AddressSanitizer $suite failed" }

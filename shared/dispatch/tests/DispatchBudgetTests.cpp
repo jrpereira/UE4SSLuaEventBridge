@@ -1,9 +1,12 @@
-#include <SharedDispatch.hpp>
+#include <dispatch/DispatchBudget.hpp>
+#include <dispatch/QueueCapacity.hpp>
+#include <dispatch/DispatchBacklog.hpp>
+#include <dispatch/QueueBuffers.hpp>
 #include <cassert>
 #include <chrono>
 #include <deque>
 #include <memory>
-using namespace UE4SSLuaEventBridge;
+using namespace UE4SSXB;
 using namespace std::chrono_literals;
 int main() {
     const DispatchBudget::Clock::time_point zero{};

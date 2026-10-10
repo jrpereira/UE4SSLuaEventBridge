@@ -1,7 +1,7 @@
-#include <SharedDispatch.hpp>
+#include <dispatch/QueueDispatchSchedule.hpp>
 #include <cassert>
 #include <chrono>
-using namespace UE4SSLuaEventBridge;
+using namespace UE4SSXB;
 using namespace std::chrono_literals;
 int main()
 {
