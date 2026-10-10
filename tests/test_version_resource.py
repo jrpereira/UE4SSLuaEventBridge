@@ -62,7 +62,7 @@ class VersionResourceTests(unittest.TestCase):
             self.assertIn('ci-package-product.ps1', source)
 
     def test_event_bridge_bootstrap_keeps_its_identity(self):
-        call = (ROOT / 'bootstrap/CMakeLists.txt').read_text()
+        call = (ROOT / 'bridge-events/CMakeLists.txt').read_text()
         call = call[call.index('add_bridge_bootstrap('):]
         call = call[:call.index('\n)')]
         arguments = dict(re.findall(r'^\s+([A-Z_]+) ("[^"]*"|\S+)$', call, re.M))

@@ -19,6 +19,20 @@ if(NOT TARGET UE4SSXBDispatch)
     add_subdirectory("${UE4SSLEB_REPO_ROOT}/shared/dispatch" shared-dispatch)
 endif()
 
+include("${UE4SSLEB_REPO_ROOT}/bootstrap/cmake/BridgeBootstrap.cmake")
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/packaging/main.json.in" "${CMAKE_CURRENT_BINARY_DIR}/main.json" @ONLY)
+add_bridge_bootstrap(
+    TARGET UE4SSLEBBootstrap
+    PRODUCT UE4SSLuaEventBridge
+    DISPLAY_NAME "UE4SS Lua Event Bridge"
+    MAGIC 0x4C454231
+    CLAIM_NAME UE4SSLEB
+    VERSION_FILE "${CMAKE_CURRENT_SOURCE_DIR}/contract/Version.hpp"
+    DIST_FOLDER 0_ModCore_UE4SSLuaEventBridge
+    SELECTOR_FILE "${CMAKE_CURRENT_BINARY_DIR}/main.json"
+    ENABLED_FILE "${CMAKE_CURRENT_SOURCE_DIR}/packaging/enabled.txt"
+)
+
 set(UE4SSLEB_LUA_API_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/lua/bridge_api.lua")
 set(UE4SSLEB_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 set(UE4SSLEB_GENERATED_LUA_API "${UE4SSLEB_GENERATED_INCLUDE_DIR}/EmbeddedLuaAPI.hpp")
