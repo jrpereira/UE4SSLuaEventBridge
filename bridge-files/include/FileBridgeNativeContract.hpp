@@ -273,6 +273,18 @@
 // roots and the shared locations, then empty `temp` in every
 // <user>/Saved/ModData/* folder that has an `.owner` marker.
 
+// ---------------------------------------------------------------------------
+// 8. Known limitations (0.1.0)
+// ---------------------------------------------------------------------------
+// * Results are pushed to Lua after the native's error handling: if Lua runs
+//   out of memory while receiving one (a read near max_read_bytes), the error
+//   is Lua's own and is not turned into `nil, code, message`.
+// * Temporary siblings left by a crash mid-write ("<name>.xbtmp-<pid>-<n>")
+//   are removed at bridge start only under ModData folders with an .owner
+//   marker; elsewhere (mod folders, savegames) they stay and List shows them.
+// * A Move of a link across volumes is refused (`invalid`): a copy would
+//   follow the link and leave a plain file.
+
 #include <array>
 #include <cstddef>
 #include <cstdint>

@@ -92,6 +92,10 @@ Reply success(Values&&... values)
     return reply;
 }
 
+// Runs after the native's try block: a Lua memory error while pushing (for
+// example a ReadBytes result near max_read_bytes) is raised by Lua itself and
+// can't be turned into `nil, code, message` here. Results are bounded by
+// max_read_bytes; see "Known limitations" in FileBridgeNativeContract.hpp.
 int push(const Lua& lua, const Reply& reply)
 {
     for (const auto& value : reply.values)
