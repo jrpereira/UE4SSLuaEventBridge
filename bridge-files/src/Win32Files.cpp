@@ -649,6 +649,13 @@ Status move_entry(const std::string& from, const std::string& to, bool overwrite
             return Done{};
         }
         const DWORD code = GetLastError();
+        if (Core::classify_replace_error(static_cast<uint32_t>(code), true) == Core::ReplaceFault::target_free)
+        {
+            // 1177: the old destination is already the .bak and `from` kept its
+            // name; the destination name is free, so finish with a rename.
+            Win32AtomicOps ops({}, {});
+            return Core::finish_partial_replace(ops, to, from, backup, win32_failure("Move", to, code));
+        }
         if (code != ERROR_UNABLE_TO_MOVE_REPLACEMENT && code != ERROR_NOT_SAME_DEVICE) return win32_failure("Move", to, code);
     }
     else
