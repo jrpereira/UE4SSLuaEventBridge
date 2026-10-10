@@ -1,10 +1,11 @@
 # UE4SSLuaFileBridge Lua API (0.1.0)
 
-Status: **draft for review (Gate G-spec).** This file is the contract the native
-product and the Lua helpers implement. Once K approves it, it is frozen, and any
-change goes through K to the native, Lua and documentation tracks together.
-Points that the plan left open carry a concrete proposal in the text and are
-listed again under [Open points for review](#open-points-for-review).
+Status: **reviewed, ready to freeze (Gate G-spec).** This file is the contract
+the native product and the Lua helpers implement. It folds in L's review
+(`bridge-files/docs/SPEC-REVIEW.md`, M1–M15), F's native contract and K's
+decisions of 2026-10-10. Once K freezes it, any change goes through K to the
+native, Lua and documentation tracks together. One point is still pending; see
+[Open points for review](#open-points-for-review).
 
 - [Conventions](#conventions)
 - [Entry point and version](#entry-point-and-version)
@@ -22,9 +23,11 @@ listed again under [Open points for review](#open-points-for-review).
 ## Conventions
 
 - **Names.** Functions are PascalCase, like UE4SSLuaEventBridge. Functions of an
-  environment are called with a dot (`env.ReadText(path)`), because each one is
-  bound to its environment. Methods of a stream or a subscription are called
-  with a colon (`stream:Write(text)`, `sub:Close()`).
+  environment are bound to it and accept both call forms: `env.ReadText(path)`
+  and `env:ReadText(path)` do the same thing (a path is never a table, so a
+  colon call is recognized without ambiguity). Methods of a stream or a
+  subscription are colon-only (`stream:Write(text)`, `sub:Close()`); a dot call
+  returns `nil, "invalid", message`.
 - **Results.** Every operation returns its value on success. On failure it
   returns `nil, code, message`:
   - `code` is one of the [error codes](#error-codes). It is stable and meant for
@@ -39,14 +42,24 @@ listed again under [Open points for review](#open-points-for-review).
   value of the wrong type or range is `invalid`.
 - **Strings** are Lua byte strings. Paths are UTF-8. File contents are bytes,
   passed through unchanged unless an operation says otherwise.
-- **Threads.** File operations are synchronous and run on the calling Lua thread.
-  They may be called from any Lua thread, including the game thread, but large
-  reads and writes there stall the frame. Callbacks (`Tail`) run on the
-  subscriber's Lua thread from the UE4SS update callback, not on the game thread;
-  schedule Unreal work with `ExecuteInGameThread`.
+- **Threads.** File operations are synchronous and run on the calling thread.
+  They work from the mod's main Lua state, the game thread
+  (`ExecuteInGameThread`), loop callbacks (`LoopAsync`) and hook callbacks, but
+  large reads and writes on the game thread stall the frame. The bridge never
+  calls into Unreal.
+- **Coroutines.** Operations are **not available inside coroutines the mod
+  creates itself** (`coroutine.create`, `coroutine.wrap`). UE4SS refuses native
+  calls from a Lua thread it didn't register; there every operation returns
+  `nil, "invalid", message` (`AddPath` raises). Call the bridge outside the
+  coroutine and pass results in.
+- **Callbacks** (`Tail`) run on the mod's root Lua state, from the bridge's
+  update callback, not on the game thread; schedule Unreal work with
+  `ExecuteInGameThread`.
 - **Isolation.** Every Lua environment (each mod's Lua state) receives its own
   `UE4SSLuaFileBridge`. Environments, streams and subscriptions belong to the Lua
-  environment that created them and are closed when it stops or reloads.
+  environment that created them and are closed when it stops or reloads. After
+  the Lua environment starts stopping, operations return `nil, "invalid",
+  message`. The native functions behind the table are not reachable from mods.
 
 ## Entry point and version
 
@@ -62,8 +75,8 @@ the [safe environment](#the-safe-set) for the calling mod. Each call returns an
 equivalent environment; whether it is the same table is unspecified.
 
 `GetVersion()` returns the product version string. `API_VERSION` is the API
-contract number, `1` for 0.1.0. Every environment also has `env.GetVersion` and
-`env.GetCapabilities`, identical to the global ones.
+contract number, `1` for 0.1.0. Every environment also has `env.GetVersion`,
+`env.GetCapabilities` and `env.GetDispatchStats`, identical to the global ones.
 
 ### `GetCapabilities()`
 
@@ -87,6 +100,33 @@ Returns a new table each call:
 
 Gate optional features on these fields, not on the version number. Later
 releases add keys; they don't change the meaning of existing ones.
+
+### `GetDispatchStats()`
+
+```lua
+local stats = UE4SSLuaFileBridge.GetDispatchStats()
+-- { subscriptions = 2, delivered = 1840, budget_exhausted_passes = 3 }
+```
+
+Process-wide `Tail` delivery counters, for parity with UE4SSLuaEventBridge:
+active subscriptions, deliveries made, and dispatch passes that ran out of
+budget with text still waiting. Counters last for the bridge lifetime. Read them
+on demand; the bridge adds no polling. Never fails.
+
+### Limits
+
+| Limit | Value | Beyond it |
+|---|---:|---|
+| Grants per environment | 256 | `AddPath` raises `io: …` |
+| Live environments per Lua environment | 4,096 | `AddPath` raises `io: …` (after one garbage collection and retry) |
+| Open streams per Lua environment | 64 | `Open` returns `nil, "io", message` |
+| `Tail` subscriptions per Lua environment | 64 | `Tail` returns `nil, "io", message` |
+| Bytes per read (`max_read_bytes`) | 64 MiB | `invalid` |
+| `Tail` line length | 1 MiB | Delivered in pieces with `info.partial = true` |
+
+Every capacity limit is `io`: it is exhaustion, not a bad argument and not
+another holder. Environments that are no longer referenced count until they
+are collected.
 
 ## Locations: roots and presets
 
@@ -112,7 +152,11 @@ environment starts). 0.1.0 ships exactly these:
 | `savegames` | `<user>/Saved/SaveGames` | `*.sav`, `*.meta`, `*.png`. [Every overwrite keeps one `.bak`](#savegames). Expect `busy` |
 
 `<calling mod>` is the mod's folder name under `Mods/`, as UE4SS reports it in
-`on_lua_start`.
+`on_lua_start`. The `Mods/` folder is the one that holds the bridge's own folder
+(checked to lie inside `game`); the path above is the fallback. A mod name that
+isn't a single valid path segment leaves `mod`, `moddata` and `temp`
+**unbound**: [`Locations()`](#envlocations) reports them with `path = nil` and
+`exists = false`, and any path through them is `invalid`.
 
 ### `env.Path(name, ...)`
 
@@ -129,10 +173,10 @@ grant. The folder need not exist.
 Errors: `invalid` (unknown location, bad part, malformed result),
 `outside_root` (a `..` part climbs out of the location).
 
-### `env.Roots()`
+### `env.Locations()`
 
 ```lua
-local locations = env.Roots()
+local locations = env.Locations()
 -- {
 --   game      = { path = "C:/…/The Blood of Dawnwalker", root = true,  exists = true },
 --   user      = { path = "C:/…/AppData/Local/Dawnwalker", root = true, exists = true },
@@ -142,10 +186,11 @@ local locations = env.Roots()
 -- }
 ```
 
-Returns a new table describing every location: its absolute path, whether it is
-one of the two roots, and whether its folder exists right now. A location whose
-folder doesn't exist is still returned, with `exists = false`. Needs no grant.
-Never fails.
+Returns a new table describing every location, roots and presets: its absolute
+path, whether it is one of the two roots, and whether its folder exists right
+now. A location whose folder doesn't exist is still returned, with
+`exists = false`; an [unbound](#locations-roots-and-presets) one has
+`path = nil`. Needs no grant. Never fails.
 
 ### The `.owner` marker
 
@@ -230,7 +275,12 @@ Every path argument accepts either form:
 - **Links.** Symbolic links, junctions and mount points inside the roots are
   followed. Every access check is made against the **resolved real path**. A
   path whose resolution leaves both roots is `outside_root`, checked at the time
-  of each call. `RemoveTree` never follows links; it removes the link itself.
+  of each call. **`Remove`, `RemoveTree` and `Move` (both ends) act on a link
+  itself:** their last segment is not followed, and the check uses the link's
+  own path (its parent resolved, the link's name appended). `RemoveTree` never
+  enters links inside the tree. `Stat` follows links and reports `link`. The
+  check isn't atomic with the operation; a junction swapped in between isn't
+  detected.
 
 ### Lexical helpers
 
@@ -263,9 +313,11 @@ write anywhere the user can. The bridge checks only what goes through it.
 | `game` | `ro` | `false` |
 | `user` | `ro` | `false` |
 | `mod` | `rw` | `false` |
-| `temp` | `rw` | `true` (proposed) |
+| `temp` | `rw` | `true` |
 
 Writing to `moddata`, `savegames` or anything else must be granted explicitly.
+`temp` allows deleting because scratch space that can't be cleaned is no
+scratch space.
 
 ### `env.AddPath(path, options?)`
 
@@ -279,7 +331,10 @@ local env = UE4SSLuaFileBridge()
 Returns a **new** environment: this one plus the grant. The original is
 unchanged, so variants derived from one base can't interfere. There is no
 global switch and nothing to reset: an environment's **scope is wherever the
-variable holding it is visible**.
+variable holding it is visible**. A function taken from an environment
+(`local read = env.ReadText`) keeps that environment's grants alive for as long
+as it lives. Assigning a field of an environment raises an error; even a
+`rawset` can't change its grants, which are held natively.
 
 `path` is a location or a location-relative path (or an absolute path inside the
 roots). It needn't exist. A grant on a file covers that file; a grant on a
@@ -292,21 +347,32 @@ folder covers the folder and, with `recursive`, everything below it.
 | `delete` | boolean | `false` | Allows `Remove`, `RemoveTree` and being the source of `Move` |
 | `recursive` | boolean | `true` | `false` covers the path itself and its direct children only |
 
-**Inheritance.** A missing `mode` or `extensions` is taken from the most specific
-grant that covers the path, worked out at check time from specificity, not from
-chain order. There always is one, because the safe set covers both roots. A
-default never widens access: `delete` defaults to `false`, and `extensions`
-inherits rather than defaulting to "any" (the safe set's root grants cover any
-extension).
+**Inheritance.** A grant with no `mode` (or no `extensions`) takes it from the
+most specific **other** grant that covers the grant's own path, treated as a
+folder, repeating upwards if that one inherits too. It is worked out at check
+time from specificity, not from chain order, so a grant's effective values
+don't depend on the file being checked. There always is a source, because the
+safe set's root grants have explicit values. A default never widens access:
+`delete` defaults to `false` and is never inherited, and `extensions` inherits
+rather than defaulting to "any" (the safe set's root grants cover any
+extension). Example: `AddPath("savegames/sub", {})` under
+`AddPath("savegames", {mode = "rw", extensions = {"sav"}})` is `rw` on `*.sav`
+only.
 
-**Validation.** `AddPath` raises a Lua error, with a message starting
-`invalid:` or `outside_root:`, when:
+`delete = true` on a grant whose inherited mode has no write (`ro`, `stat`,
+`ao`) has no effect: removing needs `delete` and an effective `wo` or `rw`.
 
-- an option key is unknown, or a value has the wrong type or an unknown value;
-- an `extensions` entry is empty or contains `.`, `/` or `\`;
+**Validation.** `AddPath` raises a Lua error at the caller's line, with a
+message starting `invalid:`, `outside_root:` or `io:`, when:
+
+- an option key is unknown or not a string, or a value has the wrong type or an
+  unknown value;
+- `extensions` isn't a sequence of strings, or an entry is empty or contains
+  `.`, `/`, `\`, `;`, a control character, or `< > : " | ? *`;
 - `delete = true` is combined with an explicit `mode` of `"ro"`, `"stat"` or
   `"ao"` (rotation of an `ao` log needs a separate grant with `delete`);
-- the path is malformed or outside the roots.
+- the path is malformed or outside the roots, or names an unbound location;
+- a [limit](#limits) is reached (`io:`).
 
 It raises rather than returning `nil, code, message` so that a bad grant fails
 at the line that built it, not later as "attempt to index a nil value" in the
@@ -333,26 +399,32 @@ a safe-set grant.
 | `Move` source | | | yes | yes | | `delete` |
 | `Move` destination | | | yes | yes | | |
 
-The plan lists `MakeDir`, writing and appending for `wo`; this spec adds `stat`
-to `wo` and `ao` (proposed), so a writer can check what it is about to touch.
-`ao` never truncates, overwrites or deletes, so logs keep their history.
+Every mode includes `stat`, so a writer can check what it is about to touch.
+`MakeDir` checks each folder it would create. `ao` never truncates, overwrites
+or deletes, so logs keep their history.
 
 ### How a call is checked
 
 For each path an operation touches:
 
-1. The path is normalized and resolved to its real path (links followed).
-   Outside both roots: `outside_root`.
-2. Among the environment's grants that **cover** the real path, the most
-   specific wins (the longest path, by segments). A grant covers a path when the
-   path is the grant's path or below it (direct children only when
-   `recursive = false`), and, for a file, when its extension is in the grant's
-   effective `extensions`. A grant that doesn't cover the path is skipped, so
-   the next enclosing grant decides. Grants are never combined.
-3. The winning grant's effective `mode` (and `delete`) must allow the operation.
+1. The path is normalized ([Paths](#paths)): `invalid` or `outside_root`.
+2. It is resolved to its real path: the deepest existing ancestor is opened
+   (links followed) and the rest appended. The leaf isn't followed for
+   `Remove`, `RemoveTree`, `Move` and the bridge's own `.bak` and temporary
+   siblings. Outside both roots: `outside_root`.
+3. Grant paths are resolved the same way. Among the environment's grants that
+   **cover** the real path, the most specific wins (the most path segments;
+   paths are unique within an environment, so there are no ties). A grant
+   covers a path when the path is the grant's path or below it (direct children
+   only when `recursive = false`), and, for a file (existing or being created),
+   when its extension is in the grant's effective `extensions`. Folders are
+   always covered. A grant that doesn't cover the path is skipped, so the next
+   enclosing grant decides. Grants are never combined.
+4. The winning grant's effective `mode` and `delete` must allow the operation.
    Otherwise: `denied`.
-4. The [delete floor](#delete-floor) and the [`.owner`](#the-owner-marker)
-   rule apply regardless of grants: `denied`.
+5. Fixed rules regardless of grants: the [delete floor](#delete-floor) and the
+   [`.owner`](#the-owner-marker) rule (`denied`), then the
+   [`savegames`](#savegames) rules (`invalid`).
 
 Checks are made natively: each environment carries a policy id, and the native
 side checks every call against the resolved real path (normalization,
@@ -364,8 +436,15 @@ Whatever the grants say, `Remove`, `RemoveTree` and `Move` (as source) refuse,
 with `denied`:
 
 - any location itself (`game`, `user`, `mod`, `moddata`, `temp`, `savegames`);
+- any folder that contains a location (for example `user/Saved`, which holds
+  `savegames` and every mod's `moddata`, or the `Mods` folder, which holds
+  `mod`), **unless that exact folder is granted with `delete = true`**. A
+  `delete` grant on an enclosing folder doesn't count;
 - a drive root;
 - the user profile root (`%USERPROFILE%`).
+
+For `RemoveTree`, the floor applies to every folder in the tree, so removing a
+folder that contains a location is refused as a whole.
 
 Their contents can be removed when granted.
 
@@ -406,8 +485,10 @@ Returns an array of the folder's entries, sorted by name (byte order), without
 { { name = "a.json", type = "file", size = 10, modified = 1791640800, link = false }, ... }
 ```
 
-Not recursive in 0.1.0. Hidden and system entries are included. Mode: `stat` on
-the folder. Errors: `not_found`, `invalid` (path is a file).
+Not recursive in 0.1.0. Hidden and system entries are included. Names that
+can't be returned as UTF-8 (unpaired UTF-16 surrogates, which Windows permits)
+or that contain a tab or newline are skipped and logged once; `RemoveTree` still
+removes them. Mode: `stat` on the folder. Errors: `not_found`, `invalid` (path is a file).
 
 ### `env.MakeDir(path)`
 
@@ -470,7 +551,8 @@ Returns `true`. The parent folder must exist. Mode: `wo`, `rw` or `ao`. Errors:
 
 ### `env.Remove(path)`
 
-Removes a file or an empty folder. Returns `true`. Mode: `wo` or `rw`, plus
+Removes a file or an empty folder. A link is removed as a link; its target is
+untouched. Returns `true`. Mode: `wo` or `rw`, plus
 `delete`. Errors: `not_found`, `denied` (including the
 [delete floor](#delete-floor)), `invalid` (a folder that isn't empty; use
 `RemoveTree`), `busy` (the file is open), `read_only`.
@@ -496,7 +578,7 @@ under `savegames`). Folders are not copied in 0.1.0. Returns `true`. Mode:
 
 ### `env.Move(from, to, options?)`
 
-Moves or renames a file. Options: `overwrite` (boolean, default `false`). Within
+Moves or renames a file, or a link as a link. Options: `overwrite` (boolean, default `false`). Within
 one volume it is a rename (`MoveFileExW`, or `ReplaceFileW` with `.bak` when
 overwriting under `savegames`). Across volumes (the two roots may be on
 different drives) it copies, flushes, then removes the source. Folders are not
@@ -534,15 +616,17 @@ already has 64 open streams.
 
 | Method | Returns | Notes |
 |---|---|---|
-| `stream:Write(text, ...)` | `true` | Writes each argument in order. Strings and numbers are accepted (numbers as `tostring`); anything else is `invalid` and nothing is written |
+| `stream:Write(text, ...)` | `true` | Writes the arguments in order, as one write. Strings and numbers are accepted (numbers as `tostring`); anything else is `invalid` and nothing is written. No arguments writes nothing and returns `true` |
 | `stream:Flush()` | `true` | Hands buffered data to the operating system. It doesn't force it to disk (`FlushFileBuffers`) |
 | `stream:Close()` | `true` | Flushes and closes. Calling it again returns `true` |
 | `stream.path` | string | The normalized path, read-only |
 
 After `Close`, `Write` and `Flush` return `nil, "invalid", "stream is closed"`.
-Streams close automatically when their Lua environment stops or reloads, and
-when the stream object is garbage-collected. Close streams explicitly when you
-are done; collection timing is not a schedule.
+Streams close automatically when their Lua environment stops or reloads. A
+stream that is garbage-collected without `Close` is closed after it is
+collected, at the latest when its Lua environment stops (the close runs at the
+next bridge call from that Lua environment, never inside the collector). Close
+streams explicitly when you are done; collection timing is not a schedule.
 
 ## File sockets: `Tail`
 
@@ -579,37 +663,62 @@ Subscribes `fn` to data appended to the file. Returns a subscription. Mode:
 - Lines mode: `text` is one line without its terminator (`\n`, or `\r\n`). A
   partial line is held until its newline arrives.
 - Chunks mode: `text` is the bytes read, unchanged.
-- `info` is `{ offset = <byte offset of text in the file>, reset = <boolean> }`.
-  `reset` is `true` on the first delivery after a truncation or rotation.
+- `info` is `{ offset = <integer>, reset = <boolean>, partial = <boolean> }`.
+  `offset` is the byte offset of `text` in the file. `reset` is `true` on the
+  first delivery after a truncation or rotation. `partial` is `true` for a piece
+  of a line longer than 1 MiB (lines mode only); the line's last piece has
+  `partial = false`.
 
 **Truncation and rotation.** When the file becomes shorter than the read
 position (truncated), or its identity (volume serial and file index) changes
 (rotated, deleted and recreated), the read position goes back to `0` and a held
-partial line is discarded.
+partial line is discarded. Identity is checked by path at most every 250 ms,
+so a rotation is noticed within that time.
 
 **Missing file.** If the file doesn't exist yet, `Tail` still succeeds provided
 its folder exists; delivery starts from offset `0` when the file appears.
 Folder missing: `not_found`.
 
-**Delivery.** The bridge checks subscribed files from its update callback, on
-the dispatch schedule it shares with UE4SSLuaEventBridge, and calls `fn` on the
-subscriber's Lua thread within the per-pass dispatch budget. Text left over when
+**Delivery.** The bridge checks subscribed files from its update callback, using
+the dispatch schedule and budget code it shares with UE4SSLuaEventBridge, and
+calls `fn` on the mod's root Lua state, from the bridge's update callback (not
+the game thread), within the per-pass dispatch budget. Text left over when
 the budget runs out is delivered on the next pass, in order. The file itself is
 the buffer: the bridge reads only what it delivers, so a slow subscriber falls
 behind but loses nothing (unless the file is truncated or rotated first). Expect
 delivery in the next frame or so after the writer's flush. A line longer than
-1 MiB is delivered in 1 MiB pieces.
+1 MiB is delivered in 1 MiB pieces (`info.partial`).
+
+The per-pass budget defaults to 256 deliveries or 2,000 microseconds, whichever
+comes first, and at least one delivery per non-empty pass. Like the event
+bridge, it is set by process environment variables read once at bridge start;
+invalid values use the defaults:
+
+| Variable | Default | Zero means |
+|---|---:|---|
+| `UE4SSLFB_MAX_EVENTS_PER_PASS` | 256 | No delivery-count limit |
+| `UE4SSLFB_MAX_DISPATCH_US` | 2,000 | No time limit |
 
 **Errors in `fn`.** A callback that raises an error closes its subscription.
 The bridge writes the path and the error to UE4SS.log.
 
-**Subscription.** `sub:Close()` stops delivery and returns `true`; calling it
-again returns `true`. A callback already running is not interrupted.
+**Closed by the bridge.** The bridge also closes a subscription when the file
+can no longer be read (for example its folder is removed or access is lost). It
+writes `<path>: <code> <message>` to UE4SS.log once. There is no callback for
+this; check `sub.closed`.
+
+**Subscription.**
+
+| Member | Notes |
+|---|---|
+| `sub:Close()` | Stops delivery and returns `true`; calling it again returns `true`. A callback already running is not interrupted |
+| `sub.closed` | Read-only boolean: `true` after `Close`, a callback error, or a close by the bridge |
+| `sub.path` | The normalized path, read-only |
+
 Subscriptions close automatically when their Lua environment stops or reloads.
-`sub.path` is the normalized path.
 
 Errors from `Tail`: `not_found`, `denied`, `outside_root`, `invalid` (`fn` is not
-a function, the path is a folder).
+a function, the path is a folder), `io` (64 subscriptions already open).
 
 ## Error codes
 
@@ -619,10 +728,10 @@ a function, the path is a folder).
 | `denied` | The environment doesn't grant the operation (mode, extension, `delete`); the [delete floor](#delete-floor) or the `.owner` rule; or Windows refuses access (`ERROR_ACCESS_DENIED`, for example under `Program Files` without elevation). The message says which |
 | `exists` | The destination exists and the operation won't replace it: `Copy` or `Move` without `overwrite`, or `MakeDir` where a file is in the way |
 | `outside_root` | The path, after normalization or link resolution, is outside both roots; a `..` climbs out of its location or root; a device, UNC or reserved-name path |
-| `read_only` | The target file has the read-only attribute, or the volume is write-protected (`ERROR_WRITE_PROTECT`). The bridge never clears the attribute |
-| `busy` | Another process or handle holds the file in a conflicting way (`ERROR_SHARING_VIOLATION`, `ERROR_LOCK_VIOLATION`), for example the game writing a save. Returned at once, without waiting or retrying |
-| `io` | Any other operating-system failure: disk full, a device error, a failed step of an atomic replace that `ReplaceFileW` reports, the open-stream limit |
-| `invalid` | A bad argument or option, a malformed path, an unknown location, the wrong kind of target (folder vs file), a folder not empty for `Remove`, a read larger than `max_read_bytes`, an operation that would bypass the `savegames` backup, or using a closed stream |
+| `read_only` | The target file has the read-only attribute (Windows reports `ERROR_ACCESS_DENIED`; the bridge checks the attribute), or the volume is write-protected (`ERROR_WRITE_PROTECT`). The bridge never clears the attribute |
+| `busy` | Another process or handle holds the file in a conflicting way (`ERROR_SHARING_VIOLATION`, `ERROR_LOCK_VIOLATION`, `ERROR_USER_MAPPED_FILE`), for example the game writing a save. Returned at once, without waiting or retrying |
+| `io` | Any other operating-system failure (disk full, a device error, a failed step of an atomic replace that `ReplaceFileW` reports, an internal error), and every [capacity limit](#limits): grants, environments, streams, subscriptions |
+| `invalid` | A bad argument or option, a malformed path, an unknown or unbound location, the wrong kind of target (folder vs file), a folder not empty for `Remove` (`ERROR_DIR_NOT_EMPTY`), a read larger than `max_read_bytes`, an operation that would bypass the `savegames` backup, a closed stream, a call from a coroutine the mod created, or a call while its Lua environment is stopping |
 
 Policy refusals and Windows refusals both use `denied`; they differ in the
 message. An operation that fails leaves no partial result unless its section
@@ -649,82 +758,12 @@ folders, file watching beyond `Tail`, presets beyond the four above.
 
 ## Internal native contract
 
-*To be drafted by F (Phase 1, step 2):* the table the DLL hands to Lua, the
-policy id carried by each environment, and the shape of each native call behind
-the functions above.
+The boundary between the DLL and the Lua layer (native functions, argument
+shapes, record formats, the content escape, dispatch and lifetime) is specified
+in [`bridge-files/include/FileBridgeNativeContract.hpp`](../include/FileBridgeNativeContract.hpp).
+It is internal: mods use only the API in this file.
 
 ## Open points for review
 
-Each is a proposal written into the spec above; approve or change before G-spec.
-
-1. **`mods` location.** The plan's own AddPath example uses `"mods"`, which isn't
-   one of the four presets. Without it, a `Tail` on another mod's file needs the
-   long `game/Dawnwalker/Binaries/Win64/ue4ss/Mods/<mod>/…` form. Proposal:
-   keep 0.1.0 to the four presets and fix the example; alternatively add `mods`
-   (read-only by the safe set) now, since file sockets between mods need it.
-2. **Root names** `game` and `user` as path prefixes (`"game/…"`, `"user/…"`)
-   and as keys of `Roots()`.
-3. **`Roots()` returns all locations**, roots and presets, with `root` and
-   `exists`, rather than only the two roots. The `exists = false` rule in the
-   plan needs somewhere to appear.
-4. **Path forms:** every path argument accepts location-relative or absolute
-   inside the roots; returned paths are absolute. Lexical helpers (`Join`,
-   `Parent`, `Name`, `Stem`, `Extension`) don't resolve locations.
-5. **`..` handling:** resolved lexically, `outside_root` only when it climbs above
-   its location or root. The stricter alternative is to reject every `..`
-   segment.
-6. **`extensions` inherits** like `mode` instead of defaulting to "any".
-   Otherwise `AddPath("savegames/sub", {})` would widen an `extensions = {"sav"}`
-   grant, contradicting "a default never widens access".
-7. **Uncovered files fall through.** A file whose extension a grant doesn't list,
-   or a deeper path under a `recursive = false` grant, is decided by the next
-   enclosing grant (usually the safe set's `ro`), not denied outright. This
-   keeps `savegames/*.png` readable after granting `rw` on `*.sav`.
-8. **Every mode includes `stat`** (the plan lists only `MakeDir`, writing and
-   appending for `wo`).
-9. **`delete` with explicit `ro`, `stat` or `ao` is an `AddPath` error;** at check
-   time `Remove` also needs an effective `wo` or `rw`.
-10. **Re-granting the same path replaces** the earlier grant, so
-    `AddPath("mod", { delete = true })` can widen a safe-set grant.
-11. **`temp` has `delete = true`** in the safe set; scratch space without delete
-    is awkward. The plan only says "read-write on `mod` and `temp`".
-12. **`AddPath` raises a Lua error** on bad input instead of returning
-    `nil, "invalid", message`, so chains fail at the faulty line.
-13. **`read_only` means the file system's read-only attribute** or a
-    write-protected volume; every policy refusal is `denied`. Alternative: use
-    `read_only` for "the grant allows reading but not this write".
-14. **`temp` cleanup** happens once at bridge start, for every `ModData/*` folder
-    with an `.owner` marker; Lua reloads don't empty it.
-15. **`.owner`** format (`key=value` lines), refreshed once per bridge session,
-    and protected from writes and removal by mods.
-16. **`savegames` refuses** non-atomic `WriteText` and truncating `Open`
-    (`invalid`) rather than silently forcing a backup. `Copy` and `Move` with
-    `overwrite` keep the `.bak` too, reading "every overwrite" literally.
-17. **No `WriteBytes`.** `WriteText` writes any Lua string unchanged. Adding
-    `WriteBytes` as an identical name for symmetry with `ReadBytes` is cheap if
-    wanted.
-18. **`ReadText`** strips a UTF-8 BOM and nothing else (no validation, no newline
-    conversion). **`max_read_bytes`** is 64 MiB per read.
-19. **Parent folders are not created** by `WriteText`, `Append`, `Open`, `Copy`
-    or `Move` (`not_found`); `MakeDir` creates parents.
-20. **`Copy` and `Move` are file-only** in 0.1.0; `List` is not recursive.
-21. **`Remove`** on a missing path returns `not_found` (not idempotent) and on a
-    non-empty folder `invalid`. **`RemoveTree`** checks every entry first and
-    removes nothing if any is denied.
-22. **Times** are seconds since the Unix epoch, possibly fractional, comparable
-    with `os.time()`.
-23. **Streams:** option names `append`, `create`, `flush`; sharing is read plus
-    delete (the plan says share-read; delete sharing allows rotation by
-    rename); `Flush` doesn't force to disk; 64 open streams per Lua environment,
-    `io` beyond that; streams also close on garbage collection.
-24. **`Tail` callback** receives `(text, info)` with `offset` and `reset`; a
-    missing file is accepted if its folder exists; a callback error closes the
-    subscription; lines over 1 MiB are split.
-25. **Dot calls for environments:** `env.ReadText(p)`, as in the plan's examples.
-    A colon call (`env:ReadText(p)`) passes the environment as the path and gets
-    `invalid`. The Lua helpers could instead detect and accept both forms.
-26. **`GetVersion` and `GetCapabilities`** exist on both the global and every
-    environment; `API_VERSION` starts at `1`.
-27. **Names in `List`** that aren't valid UTF-16 (unpaired surrogates, which
-    Windows permits) can't be returned as UTF-8. Proposal: skip them in 0.1.0
-    and log once; `RemoveTree` still removes them natively.
+- **`mods` location:** pending Jorge's decision. 0.1.0 ships without it; until
+  then another mod's folder is reached as `game/Dawnwalker/Binaries/Win64/ue4ss/Mods/<mod>/…`.
