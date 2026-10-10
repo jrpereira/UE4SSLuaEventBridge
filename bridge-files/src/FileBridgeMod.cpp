@@ -406,9 +406,14 @@ public:
             refresh = !session.owner_refreshed;
             session.owner_refreshed = true;
         }
+        // The marker is bookkeeping: failing to update it (for example another
+        // session of the same mod writing it) is logged, never the caller's error.
         const auto exists = Win32::probe(owner);
-        if (!exists) return exists.failure();
-        if (exists.value().kind == Win32::Kind::missing || refresh)
+        if (!exists)
+        {
+            report("updating " + owner + " failed: " + exists.failure().message);
+        }
+        else if (exists.value().kind == Win32::Kind::missing || refresh)
         {
             const auto now = Win32::utc_timestamp();
             std::string first = now;
@@ -429,7 +434,7 @@ public:
             const std::string content = "folder=" + session.mod_name + "\nfirst_write=" + first + "\nlast_write=" + now +
                 "\nbridge_version=" + UE4SSLFB_VERSION + "\n";
             auto written = Win32::write_atomic(owner, content, {});
-            if (!written) return written;
+            if (!written) report("updating " + owner + " failed: " + written.failure().message);
         }
         if (const auto* temp = checker.location_real("temp"); temp && Core::is_within(real, *temp, &Win32::equal_fold))
         {
