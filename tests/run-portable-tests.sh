@@ -1,33 +1,38 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-c++ -std=c++20 -Wall -Wextra -Werror -Ibridge/include -Icontract tests/DispatchBudgetTests.cpp -o /tmp/ue4ss-dispatch-budget-tests
-/tmp/ue4ss-dispatch-budget-tests
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${repo_root}"
+build_dir="$(mktemp -d)"
+trap 'rm -rf "${build_dir}"' EXIT
+
+c++ -std=c++20 -Wall -Wextra -Werror -Ibridge/include -Icontract tests/DispatchBudgetTests.cpp -o "${build_dir}"/dispatch-budget-tests
+"${build_dir}"/dispatch-budget-tests
 
 c++ -std=c++20 -Wall -Wextra -Werror -pthread \
     -Ibridge/include -Icontract \
     tests/SessionAliasIndexTests.cpp \
-    -o /tmp/ue4ss-lua-event-bridge-tests
+    -o "${build_dir}"/lua-event-bridge-tests
 
-/tmp/ue4ss-lua-event-bridge-tests
+"${build_dir}"/lua-event-bridge-tests
 
-c++ -std=c++20 -Wall -Wextra -Werror -Ibridge/include -Icontract tests/BindingSnapshotTests.cpp -o /tmp/ue4ss-binding-snapshot-tests
-/tmp/ue4ss-binding-snapshot-tests
+c++ -std=c++20 -Wall -Wextra -Werror -Ibridge/include -Icontract tests/BindingSnapshotTests.cpp -o "${build_dir}"/binding-snapshot-tests
+"${build_dir}"/binding-snapshot-tests
 
-c++ -std=c++20 -Wall -Wextra -Werror -Ibridge/include -Icontract tests/WeakObjectPtrTests.cpp -o /tmp/ue4ss-weak-object-tests
-/tmp/ue4ss-weak-object-tests
+c++ -std=c++20 -Wall -Wextra -Werror -Ibridge/include -Icontract tests/WeakObjectPtrTests.cpp -o "${build_dir}"/weak-object-tests
+"${build_dir}"/weak-object-tests
 
-c++ -std=c++20 -Wall -Wextra -Werror -pthread -Ibridge/include -Icontract tests/QueueBuffersTests.cpp -o /tmp/ue4ss-queue-buffer-tests
-/tmp/ue4ss-queue-buffer-tests
+c++ -std=c++20 -Wall -Wextra -Werror -pthread -Ibridge/include -Icontract tests/QueueBuffersTests.cpp -o "${build_dir}"/queue-buffer-tests
+"${build_dir}"/queue-buffer-tests
 
-c++ -std=c++20 -Wall -Wextra -Werror -Ibridge/include -Icontract tests/QueueDispatchScheduleTests.cpp -o /tmp/ue4ss-queue-schedule-tests
-/tmp/ue4ss-queue-schedule-tests
+c++ -std=c++20 -Wall -Wextra -Werror -Ibridge/include -Icontract tests/QueueDispatchScheduleTests.cpp -o "${build_dir}"/queue-schedule-tests
+"${build_dir}"/queue-schedule-tests
 
-c++ -std=c++20 -Wall -Wextra -Werror -pthread -Ibridge/include -Icontract tests/LifecycleRegistryTests.cpp -o /tmp/ue4ss-lifecycle-registry-tests
-/tmp/ue4ss-lifecycle-registry-tests
+c++ -std=c++20 -Wall -Wextra -Werror -pthread -Ibridge/include -Icontract tests/LifecycleRegistryTests.cpp -o "${build_dir}"/lifecycle-registry-tests
+"${build_dir}"/lifecycle-registry-tests
 
-c++ -std=c++20 -Wall -Wextra -Werror -pthread -Ibridge/include -Icontract tests/LifetimeProbeTests.cpp -o /tmp/ue4ss-lifetime-probe-tests
-/tmp/ue4ss-lifetime-probe-tests
+c++ -std=c++20 -Wall -Wextra -Werror -pthread -Ibridge/include -Icontract tests/LifetimeProbeTests.cpp -o "${build_dir}"/lifetime-probe-tests
+"${build_dir}"/lifetime-probe-tests
 
-c++ -std=c++20 -Wall -Wextra -Werror -Ibootstrap/include bootstrap/tests/BootstrapSelectionTests.cpp -o /tmp/ue4ss-bootstrap-selection-tests
-/tmp/ue4ss-bootstrap-selection-tests
+c++ -std=c++20 -Wall -Wextra -Werror -Ibootstrap/include bootstrap/tests/BootstrapSelectionTests.cpp -o "${build_dir}"/bootstrap-selection-tests
+"${build_dir}"/bootstrap-selection-tests
