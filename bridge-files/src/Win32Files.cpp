@@ -453,6 +453,7 @@ Outcome<std::vector<Core::ListEntry>> list(const std::string& path, std::size_t&
         entry.type = directory ? "directory" : (data.dwFileAttributes & FILE_ATTRIBUTE_DEVICE) != 0 ? "other" : "file";
         entry.size = directory ? 0 : static_cast<int64_t>((static_cast<uint64_t>(data.nFileSizeHigh) << 32) | data.nFileSizeLow);
         entry.modified_filetime = ticks(data.ftLastWriteTime);
+        entry.created_filetime = ticks(data.ftCreationTime);
         entry.link = (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
         entries.push_back(std::move(entry));
     } while (FindNextFileW(find, &data));

@@ -21,6 +21,7 @@ struct ListEntry
     int64_t size{};
     int64_t modified_filetime{};
     bool link{};
+    int64_t created_filetime{};
 };
 
 struct LocationRecord
@@ -61,6 +62,8 @@ inline std::string encode_list(std::vector<ListEntry> entries, std::size_t& skip
         out += format_filetime(entry.modified_filetime);
         out.push_back(NativeContract::field_separator);
         out.push_back(entry.link ? '1' : '0');
+        out.push_back(NativeContract::field_separator);
+        out += format_filetime(entry.created_filetime);
     }
     return out;
 }
