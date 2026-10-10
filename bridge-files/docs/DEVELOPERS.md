@@ -182,9 +182,13 @@ local text = files.ReadText("moddata/profiles/default.json")
   one append, so two writers appending lines don't overwrite each other.
 - **Parent folders must exist** for `WriteText`, `Append`, `Open`, `Copy` and
   `Move`. `MakeDir` creates a folder and its missing parents.
-- **`List`** returns one folder's entries, sorted by name. **`Stat`** returns
-  type, size, times and flags. Times are seconds since the Unix epoch, like
-  `os.time()`.
+- **`List`** returns one folder's entries, sorted by name, each with `name`,
+  `type`, `size`, `modified`, `created` and `link`. **`Stat`** returns type,
+  size, times and flags for one path. Times are seconds since the Unix epoch,
+  like `os.time()`.
+- **`List` reads directory-entry metadata; `Stat` reads the file itself.** NTFS
+  can update directory entries lazily for hardlinked files, so a listed size or
+  time may lag. Use `Stat` when exact times matter.
 - **`Copy`** and **`Move`** work on files and refuse to replace an existing
   destination unless given `{ overwrite = true }`. **`Remove`** removes a file
   or an empty folder; **`RemoveTree`** removes a folder and its contents, and

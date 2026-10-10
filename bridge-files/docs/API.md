@@ -493,8 +493,18 @@ Returns an array of the folder's entries, sorted by name (byte order), without
 `.` and `..`:
 
 ```lua
-{ { name = "a.json", type = "file", size = 10, modified = 1791640800, link = false }, ... }
+{
+    { name = "a.json", type = "file", size = 10,
+      modified = 1791640800, created = 1791640000, link = false },
+    ...
+}
 ```
+
+Each entry has `name`, `type`, `size`, `modified`, `created` and `link`, with the
+same meaning and units as in [`Stat`](#envstatpath) (times in seconds since the
+Unix epoch, possibly fractional). The values come from the folder's directory
+entries, which NTFS may update lazily for a file with several hard links; `Stat`
+reads the file itself, so use `Stat` when exact sizes or times matter.
 
 Not recursive in 1.0.1. Hidden and system entries are included. Names that
 can't be returned as UTF-8 (unpaired UTF-16 surrogates, which Windows permits)
