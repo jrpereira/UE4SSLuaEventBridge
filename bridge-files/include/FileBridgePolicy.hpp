@@ -115,7 +115,7 @@ inline Outcome<PolicyGrant> make_grant(
     }
     if (extensions_text.empty()) return grant; // {} covers no files
     std::size_t start = 0;
-    while (true)
+    for (;;)
     {
         const auto end = extensions_text.find(NativeContract::extension_separator, start);
         const auto entry = extensions_text.substr(start, end == std::string_view::npos ? std::string_view::npos : end - start);
