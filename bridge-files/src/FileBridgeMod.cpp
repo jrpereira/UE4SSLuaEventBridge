@@ -489,6 +489,35 @@ private:
             auto removed = Win32::remove_tree_entries(list);
             if (!removed) report("emptying " + temp + " failed: " + removed.failure().message);
         }
+        remove_stale_temp_siblings(base);
+    }
+
+    // Temporary siblings ("<name>.xbtmp-<pid>-<n>") left by an earlier process
+    // that stopped mid-write, under ModData folders with an .owner marker.
+    // Leftovers elsewhere (mod folders, savegames) are left alone in 0.1.0.
+    void remove_stale_temp_siblings(const std::string& base)
+    {
+        const auto current = Win32::process_id();
+        std::size_t removed = 0;
+        for (const auto& name : Win32::subfolders(base))
+        {
+            const auto folder = base + "/" + name;
+            const auto owner = Win32::probe(folder + "/.owner");
+            if (!owner || owner.value().kind != Win32::Kind::file) continue;
+            auto entries = Win32::enumerate_tree(folder);
+            if (!entries) continue;
+            std::vector<Win32::TreeEntry> stale;
+            for (auto& entry : entries.value())
+            {
+                if (entry.directory) continue;
+                const auto pid = Core::temp_sibling_pid(Core::leaf_name(entry.path));
+                if (pid && *pid != current) stale.push_back(std::move(entry));
+            }
+            auto status = Win32::remove_tree_entries(stale);
+            if (!status) report("removing leftover temporary files under " + folder + " failed: " + status.failure().message);
+            else removed += stale.size();
+        }
+        if (removed != 0) report("removed " + std::to_string(removed) + " leftover temporary file(s) under " + base);
     }
 
     void close_session(Session& session)
