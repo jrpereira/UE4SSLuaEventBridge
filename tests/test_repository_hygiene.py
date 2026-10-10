@@ -66,6 +66,41 @@ class HygieneTests(unittest.TestCase):
             self.assertEqual(pushed.returncode, 1, pushed.stdout+pushed.stderr)
             self.assertIn('config.ini', pushed.stdout)
 
+    def test_push_event_with_unknown_before_checks_full_lineage(self):
+        # After a force-push the event's before SHA is not in the checkout.
+        import json, os, sys
+        driver = Path(__file__).resolve().parents[1] / 'tools/check_incoming_history.py'
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            git = self.repository(root)
+            (root / "README.md").write_text("safe")
+            git("add", ".")
+            git("commit", "-qm", "safe")
+            safe = git("rev-parse", "HEAD").decode().strip()
+            event = Path(tmp) / "event.json"
+            def run(before, after):
+                event.write_text(json.dumps({"before": before, "after": after}))
+                return subprocess.run([sys.executable, str(driver)], cwd=root, text=True, capture_output=True,
+                                      env={**os.environ, "GITHUB_EVENT_PATH": str(event)})
+            for before in ["1" * 40, "0" * 40, ""]:
+                with self.subTest(before=before):
+                    result = run(before, safe)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("Incoming history hygiene passed", result.stdout)
+            (root / "config.ini").write_text("personal")
+            git("add", "config.ini")
+            git("commit", "-qm", "accidental config")
+            git("rm", "-q", "config.ini")
+            git("commit", "-qm", "remove config")
+            head = git("rev-parse", "HEAD").decode().strip()
+            result = run("1" * 40, head)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("config.ini", result.stdout)
+            self.assertNotIn("Invalid revision range", result.stderr)
+            # A known before SHA still limits the check to the pushed range.
+            clean = run(safe, safe)
+            self.assertEqual(clean.returncode, 0, clean.stdout + clean.stderr)
+
     def repository(self, root):
         root.mkdir()
         def git(*args):
