@@ -230,7 +230,41 @@ public:
         if (!backlog_.empty()) budget_exhausted_passes_.fetch_add(1, std::memory_order_relaxed);
     }
 
-    void on_lua_start(RC::StringViewType mod_name, Lua& lua, Lua&, Lua&, Lua*) override
+    void on_lua_start(RC::StringViewType mod_name, Lua& lua, Lua& main_lua, Lua& async_lua, Lua* hook_lua) override
+    {
+        // Nothing may escape into UE4SS's loop over C++ mods (contract section 2,
+        // step 5): log, publish nothing, and that mod has no UE4SSLuaFileBridge.
+        try
+        {
+            start_session(mod_name, lua);
+        }
+        catch (const std::exception& error)
+        {
+            report_start_failure(mod_name, error.what());
+        }
+        catch (...)
+        {
+            report_start_failure(mod_name, "unknown exception");
+        }
+        (void)main_lua;
+        (void)async_lua;
+        (void)hook_lua;
+    }
+
+    void report_start_failure(RC::StringViewType mod_name, std::string_view what)
+    {
+        try
+        {
+            const auto name = Core::utf16_to_utf8(std::u16string(mod_name.begin(), mod_name.end()));
+            report("starting the file bridge for mod \"" + (name ? *name : std::string("?")) + "\" failed: " +
+                std::string(what));
+        }
+        catch (...)
+        {
+        }
+    }
+
+    void start_session(RC::StringViewType mod_name, Lua& lua)
     {
         auto session = std::make_shared<Session>();
         session->id = next_session_id_.fetch_add(1);
