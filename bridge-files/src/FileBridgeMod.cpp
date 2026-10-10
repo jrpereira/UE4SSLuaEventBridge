@@ -548,7 +548,8 @@ private:
             {
                 if (!subscription->open.load()) continue;
                 std::vector<Core::TailDelivery> out;
-                auto polled = subscription->file->poll(out, tail_read_bytes_per_pass, now);
+                std::size_t consumed = 0;
+                auto polled = subscription->file->poll(out, tail_read_bytes_per_pass, now, consumed);
                 for (auto& delivery : out)
                 {
                     batch.push_back(Pending{session, subscription, Contract::DispatchKind::data, std::move(delivery.text),

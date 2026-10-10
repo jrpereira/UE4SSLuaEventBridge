@@ -145,9 +145,12 @@ public:
     TailFile(const TailFile&) = delete;
     TailFile& operator=(const TailFile&) = delete;
 
-    // Reads at most `budget_bytes` of new data into deliveries. A failure means
-    // the subscription must close (code and message for the log).
-    Status poll(std::vector<Core::TailDelivery>& out, std::size_t budget_bytes, std::chrono::steady_clock::time_point now);
+    // Reads at most `budget_bytes` of new data into deliveries and reports the
+    // bytes read in `consumed`. On rotation or deletion the old file is read to
+    // its end before switching. A failure means the subscription must close
+    // (code and message for the log).
+    Status poll(std::vector<Core::TailDelivery>& out, std::size_t budget_bytes, std::chrono::steady_clock::time_point now,
+        std::size_t& consumed);
 
 private:
     TailFile(std::string path, bool chunks) : path_(std::move(path)), state_(chunks) {}
@@ -157,6 +160,9 @@ private:
     Core::TailState state_;
     void* handle_{};
     uint64_t identity_[2]{};
+    void* next_handle_{};          // the rotated-in file, while the old one drains
+    uint64_t next_identity_[2]{};
+    bool switching_{};             // draining handle_ before moving to next_handle_
     bool seen_{};
     std::chrono::steady_clock::time_point next_identity_check_{};
 };
