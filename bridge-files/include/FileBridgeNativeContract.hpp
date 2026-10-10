@@ -551,8 +551,10 @@ inline constexpr std::array<LocationEntry, 7> locations{{
 }};
 
 // List(session, policy, path): one record per entry, sorted by name (bytes).
-// type is "file", "directory" or "other".
-inline constexpr std::array<std::string_view, 5> list_fields{"name", "type", "size", "modified", "link"};
+// type is "file", "directory" or "other". modified and created are Unix
+// seconds (UTC, possibly fractional) as in Stat; created was appended last so
+// earlier fields keep their positions.
+inline constexpr std::array<std::string_view, 6> list_fields{"name", "type", "size", "modified", "link", "created"};
 
 // --- Data escape (section 5) ------------------------------------------------
 

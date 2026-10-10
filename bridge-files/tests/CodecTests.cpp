@@ -64,14 +64,16 @@ void records()
 {
     std::size_t skipped = 99;
     std::vector<ListEntry> entries{
-        {"b.txt", "file", 10, filetime_unix_epoch + 20000000, false},
-        {"a", "directory", 0, filetime_unix_epoch, true},
-        {"bad\tname", "file", 1, filetime_unix_epoch, false},
-        {"also\nbad", "file", 1, filetime_unix_epoch, false},
+        {"b.txt", "file", 10, filetime_unix_epoch + 20000000, false, filetime_unix_epoch + 15000000},
+        {"a", "directory", 0, filetime_unix_epoch, true, filetime_unix_epoch - 2500000},
+        {"bad\tname", "file", 1, filetime_unix_epoch, false, filetime_unix_epoch},
+        {"also\nbad", "file", 1, filetime_unix_epoch, false, filetime_unix_epoch},
     };
     const auto encoded = encode_list(entries, skipped);
     CHECK(skipped == 2);
-    CHECK(encoded == "a\tdirectory\t0\t0\t1\nb.txt\tfile\t10\t2\t0");
+    // name, type, size, modified, link, created
+    CHECK(encoded == "a\tdirectory\t0\t0\t1\t-0.25\nb.txt\tfile\t10\t2\t0\t1.5");
+    CHECK(NativeContract::list_fields.size() == 6 && NativeContract::list_fields[5] == "created");
     CHECK(encode_list({}, skipped).empty() && skipped == 0);
 
     const auto locations = encode_locations({{"game", "C:/G", true, true}, {"mod", "", false, false}});
