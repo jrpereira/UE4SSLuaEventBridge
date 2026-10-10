@@ -128,6 +128,17 @@ Every capacity limit is `io`: it is exhaustion, not a bad argument and not
 another holder. Environments that are no longer referenced count until they
 are collected.
 
+**`Tail` read caps** are tuning, not capacity limits: nothing fails when they
+are reached. On each dispatch pass (20 passes per second by default) the bridge
+reads at most **256 KiB in total across all subscriptions** and at most **64 KiB
+from any one subscription's file**. Subscriptions are polled round-robin,
+starting each pass after the one where the previous pass stopped, so one busy
+file can't starve the others. Text not read in a pass stays in the file and is
+read on a later pass. Together with the [delivery budget](#envtailpath-fn-options),
+this keeps polling from stalling UE4SS's update thread; it also bounds
+throughput, to roughly 5 MiB/s in total and 1.25 MiB/s per file at the default
+rate.
+
 ## Locations: roots and presets
 
 A **location** is a named folder. Paths start from a location (see
@@ -532,7 +543,10 @@ never a mix, and a failure leaves the target unchanged:
 4. On any failure, delete the temporary file and return the error.
 
 The temporary sibling isn't checked against `extensions`. A crash can leave one
-behind; its name makes it recognizable.
+behind; its name makes it recognizable. At bridge start, leftovers are removed
+only inside `<user>/Saved/ModData/*` folders that have an `.owner` marker.
+Leftovers elsewhere (mod folders, `savegames`) are **not cleaned
+automatically**: they stay until removed and appear in `List`.
 
 **Non-atomic** (`atomic = false`): opens the target with truncation and writes in
 place. A failure can leave a partial file. Refused under `savegames`
@@ -581,8 +595,9 @@ under `savegames`). Folders are not copied in 0.1.0. Returns `true`. Mode:
 Moves or renames a file, or a link as a link. Options: `overwrite` (boolean, default `false`). Within
 one volume it is a rename (`MoveFileExW`, or `ReplaceFileW` with `.bak` when
 overwriting under `savegames`). Across volumes (the two roots may be on
-different drives) it copies, flushes, then removes the source. Folders are not
-moved in 0.1.0. Returns `true`. Mode: `wo` or `rw` plus `delete` on `from`;
+different drives) it copies, flushes, then removes the source. A **link** can't
+be moved across volumes, because the copy would follow it and leave a plain
+file: that is refused with `invalid`. Folders are not moved in 0.1.0. Returns `true`. Mode: `wo` or `rw` plus `delete` on `from`;
 `wo` or `rw` on `to`. Errors: `not_found`, `exists`, `invalid`, `busy`,
 `read_only`, `denied` (including the delete floor on `from`).
 
@@ -699,6 +714,9 @@ invalid values use the defaults:
 | `UE4SSLFB_MAX_EVENTS_PER_PASS` | 256 | No delivery-count limit |
 | `UE4SSLFB_MAX_DISPATCH_US` | 2,000 | No time limit |
 
+File reads per pass are also capped (256 KiB in total, 64 KiB per
+subscription, round-robin); see [Limits](#limits).
+
 **Errors in `fn`.** A callback that raises an error closes its subscription.
 The bridge writes the path and the error to UE4SS.log.
 
@@ -731,7 +749,7 @@ a function, the path is a folder), `io` (64 subscriptions already open).
 | `read_only` | The target file has the read-only attribute (Windows reports `ERROR_ACCESS_DENIED`; the bridge checks the attribute), or the volume is write-protected (`ERROR_WRITE_PROTECT`). The bridge never clears the attribute |
 | `busy` | Another process or handle holds the file in a conflicting way (`ERROR_SHARING_VIOLATION`, `ERROR_LOCK_VIOLATION`, `ERROR_USER_MAPPED_FILE`), for example the game writing a save. Returned at once, without waiting or retrying |
 | `io` | Any other operating-system failure (disk full, a device error, a failed step of an atomic replace that `ReplaceFileW` reports, an internal error), and every [capacity limit](#limits): grants, environments, streams, subscriptions |
-| `invalid` | A bad argument or option, a malformed path, an unknown or unbound location, the wrong kind of target (folder vs file), a folder not empty for `Remove` (`ERROR_DIR_NOT_EMPTY`), a read larger than `max_read_bytes`, an operation that would bypass the `savegames` backup, a closed stream, a call from a coroutine the mod created, or a call while its Lua environment is stopping |
+| `invalid` | A bad argument or option, a malformed path, an unknown or unbound location, the wrong kind of target (folder vs file), a folder not empty for `Remove` (`ERROR_DIR_NOT_EMPTY`), a read larger than `max_read_bytes`, an operation that would bypass the `savegames` backup, a link moved across volumes, a closed stream, a call from a coroutine the mod created, or a call while its Lua environment is stopping |
 
 Policy refusals and Windows refusals both use `denied`; they differ in the
 message. An operation that fails leaves no partial result unless its section

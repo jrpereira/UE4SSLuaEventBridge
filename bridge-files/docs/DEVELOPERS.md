@@ -170,7 +170,11 @@ local text = files.ReadText("moddata/profiles/default.json")
   target, flushes it, and swaps it in, so a reader or a crash sees the old
   content or the new content, never half of each. `{ atomic = false }` writes
   in place when you need to (not under `savegames`). It writes the bytes as
-  given, so it also writes binary content.
+  given, so it also writes binary content. If the game crashes mid-write, the
+  temporary file (`<name>.xbtmp-<pid>-<n>`) can stay behind. The bridge removes
+  such leftovers at start only inside `moddata` folders; in mod folders and
+  `savegames` they are **not cleaned automatically** and show up in `List`, so
+  skip or remove names containing `.xbtmp-` if that matters to you.
 - **`ReadText`** removes a UTF-8 byte-order mark and changes nothing else.
   **`ReadBytes`** returns the bytes exactly and can read a range
   (`{ offset = 128, length = 64 }`). A single read is limited to 64 MiB.
@@ -185,7 +189,9 @@ local text = files.ReadText("moddata/profiles/default.json")
   destination unless given `{ overwrite = true }`. **`Remove`** removes a file
   or an empty folder; **`RemoveTree`** removes a folder and its contents, and
   removes nothing if any entry inside is not covered by a `delete` grant. Links
-  are removed as links; their targets are left alone.
+  are removed and moved as links; their targets are left alone. Moving a link
+  to another drive is refused with `invalid`, since copying it would follow
+  the link.
 
 ## Save games
 
@@ -361,6 +367,15 @@ defaults:
 
 At least one line is delivered per pass that has data, and a slow callback can
 still exceed the time allowance; the budget isn't preemptive.
+
+File reads are capped too, so polling many busy files can't stall UE4SS's
+update thread. Each pass (20 per second by default) reads at most 256 KiB in
+total across all subscriptions and at most 64 KiB from any one file, visiting
+subscriptions round-robin so one busy file can't starve the rest. These are
+tuning values, not capacity limits: nothing fails when they are reached, and
+the rest is read on later passes. They do bound throughput, to roughly 5 MiB/s
+in total and 1.25 MiB/s per file. A file socket is for messages, not bulk
+transfer.
 
 ## Examples
 
