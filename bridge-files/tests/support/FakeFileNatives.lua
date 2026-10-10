@@ -139,6 +139,7 @@ function Fake.new()
         if content == nil then return nil, "not_found", "Stat " .. key .. ": not found" end
         return "file", #content, 1791640800.25, 1791640000, false, false
     end
+    -- List records: name, type, size, modified, link, created (last).
     function impl.List() return fake.listing end
     function impl.ReadText(_, _, path)
         local key, code, message = file(path)

@@ -259,13 +259,23 @@ test("Stat and List decode native results", function(fake, bridge)
     fake.listing = ""
     local empty = env.List("mod")
     expect(type(empty) == "table" and #empty == 0)
-    fake.listing = "a.json\tfile\t10\t1791640800\t0\nsub\tdirectory\t0\t1791640000.5\t1\n\tother\t0\t0\t0"
+    fake.listing = "a.json\tfile\t10\t1791640800\t0\t1791640000\n"
+        .. "sub\tdirectory\t0\t1791640000.5\t1\t1791630000.25\n"
+        .. "\tother\t0\t0\t0\t0"
     local entries = env.List("mod")
     expect(#entries == 3)
     expect(entries[1].name == "a.json" and entries[1].type == "file" and entries[1].size == 10)
     expect(math.type(entries[1].size) == "integer" and entries[1].link == false)
+    expect(entries[1].created == 1791640000)
     expect(entries[2].modified == 1791640000.5 and entries[2].link == true)
+    expect(entries[2].created == 1791630000.25)
     expect(entries[3].name == "" and entries[3].type == "other", "empty fields are kept")
+    -- Records from before `created` was added decode without it.
+    fake.listing = "old.txt\tfile\t3\t1791640800\t0\nshort\tfile"
+    entries = env.List("mod")
+    expect(#entries == 2 and entries[1].name == "old.txt" and entries[1].created == nil)
+    expect(entries[1].size == 3 and entries[1].modified == 1791640800)
+    expect(entries[2].size == nil and entries[2].modified == nil and entries[2].link == false)
 end)
 
 -- AddPath -------------------------------------------------------------------------
