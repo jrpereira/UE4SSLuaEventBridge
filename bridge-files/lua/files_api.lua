@@ -484,14 +484,17 @@ end
 function __operations.List(holder, path)
     local text, code, message = __listNative(holder, path)
     if text == nil then return nil, code, message end
+    -- Fields: name, type, size, modified, link, created. A missing field
+    -- (an older record without `created`) decodes as nil.
     local entries = {}
     for index, record in ipairs(__records(text)) do
         entries[index] = {
             name = record[1],
             type = record[2],
-            size = tonumber(record[3]),
-            modified = tonumber(record[4]),
+            size = record[3] and tonumber(record[3]),
+            modified = record[4] and tonumber(record[4]),
             link = record[5] == "1",
+            created = record[6] and tonumber(record[6]),
         }
     end
     return entries
