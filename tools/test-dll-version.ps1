@@ -6,7 +6,7 @@ param(
 )
 $ErrorActionPreference='Stop'
 if(-not $ExpectedVersion){
-    $ExpectedVersion=(& (Join-Path $PSScriptRoot 'release-metadata.ps1')).version
+    $ExpectedVersion=(& (Join-Path $PSScriptRoot 'release-metadata.ps1') -Product bridge-events).version
 }
 if($ExpectedVersion -notmatch '^([0-9]+)\.([0-9]+)\.([0-9]+)$'){
     throw "ExpectedVersion must be MAJOR.MINOR.PATCH: $ExpectedVersion"
