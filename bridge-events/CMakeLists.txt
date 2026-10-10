@@ -15,6 +15,9 @@ option(UE4SSLEB_COMPONENT_LAYOUT_128 "Experimental UE5.5 component layout for is
 if(UE4SSLEB_BUILD_TESTS AND CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     enable_testing()
 endif()
+if(NOT TARGET UE4SSXBDispatch)
+    add_subdirectory("${UE4SSLEB_REPO_ROOT}/shared/dispatch" shared-dispatch)
+endif()
 
 set(UE4SSLEB_LUA_API_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/lua/bridge_api.lua")
 set(UE4SSLEB_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
