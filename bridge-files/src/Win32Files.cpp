@@ -666,6 +666,8 @@ Status move_entry(const std::string& from, const std::string& to, bool overwrite
         if (code != ERROR_NOT_SAME_DEVICE) return win32_failure("Move", to, code);
     }
     // Across volumes: copy (atomically, keeping the .bak), flush, then remove the source.
+    // A copy would follow a link and leave a plain file, so links stay on their volume.
+    if (source.value().link) return Failure{ErrorCode::invalid, "Move " + from + ": links aren't moved across volumes"};
     auto copied = atomic_into(to, {}, from, backup, overwrite);
     if (!copied) return copied;
     if (!DeleteFileW(system_path(from).c_str())) return last_failure("Move", from);
