@@ -8,7 +8,14 @@
 #define UE4SSLEB_CALL
 #endif
 
-#define UE4SSLEB_IMPLEMENTATION_MAGIC UINT32_C(0x4C454231)
+/* The descriptor layout and the exported symbol name are shared by every product;
+   the magic is per product. A product's implementation build defines
+   UE4SSLEB_IMPLEMENTATION_MAGIC, and its bootstrap gets the same value from
+   add_bridge_bootstrap(MAGIC). Without a definition it is the event bridge's 'LEB1'. */
+#define UE4SSLEB_EVENT_BRIDGE_MAGIC UINT32_C(0x4C454231)
+#ifndef UE4SSLEB_IMPLEMENTATION_MAGIC
+#define UE4SSLEB_IMPLEMENTATION_MAGIC UE4SSLEB_EVENT_BRIDGE_MAGIC
+#endif
 #define UE4SSLEB_IMPLEMENTATION_ABI UINT32_C(1)
 #define UE4SSLEB_TARGET_UE4SS_COMMIT UINT32_C(0x97b7e501)
 
