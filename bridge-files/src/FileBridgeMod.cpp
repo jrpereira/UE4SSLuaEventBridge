@@ -247,7 +247,12 @@ public:
             session->locations = Core::make_locations({}, {}, {}, {});
         }
         session->safe_policy = next_policy_id_.fetch_add(1);
-        session->policies.emplace(session->safe_policy, std::make_shared<const Policy>(Core::safe_policy(session->locations)));
+        auto safe = Core::safe_policy(session->locations);
+        for (auto& grant : safe.grants)
+        {
+            if (auto real = resolver_.resolve(grant.lexical, true)) grant.real = std::move(real.value());
+        }
+        session->policies.emplace(session->safe_policy, std::make_shared<const Policy>(std::move(safe)));
         if (roots_.ok && !session->locations.bound("mod"))
         {
             report("mod \"" + session->mod_name + "\": its name isn't one folder name, so mod, moddata and temp are unbound");
@@ -833,6 +838,9 @@ Reply make_dir(FileBridgeMod& bridge, Call& call)
     auto target = context.target("MakeDir", path, Access::make_dir, true, false, TargetKind::directory);
     if (!target) return failure(target.failure());
     if (target.value().probe.kind == Win32::Kind::file) return failure(ErrorCode::exists, "MakeDir " + path + ": a file is in the way");
+    // moddata and temp are created by the bridge (with .owner) once the target is granted.
+    auto prepared = bridge.prepare_moddata(*context.session, context.checker, target.value().real);
+    if (!prepared) return failure(prepared.failure());
     // Missing folders from the target upwards; each must be granted.
     std::vector<std::string> missing;
     std::string current = target.value().real;
@@ -852,8 +860,6 @@ Reply make_dir(FileBridgeMod& bridge, Call& call)
         auto checked = context.checker.check_real(folder, request);
         if (!checked) return failure(checked.failure());
     }
-    auto prepared = bridge.prepare_moddata(*context.session, context.checker, target.value().real);
-    if (!prepared) return failure(prepared.failure());
     for (auto it = missing.rbegin(); it != missing.rend(); ++it)
     {
         auto made = Win32::create_directory(*it);
@@ -876,10 +882,10 @@ Reply write_text(FileBridgeMod& bridge, Call& call)
     const auto& real = target.value().real;
     if (target.value().probe.kind == Win32::Kind::directory) return failure(ErrorCode::invalid, "WriteText " + path + ": is a folder");
     if (target.value().probe.read_only) return failure(ErrorCode::read_only, "WriteText " + path + ": the file is read-only");
-    auto parent = parent_exists("WriteText", real);
-    if (!parent) return failure(parent.failure());
     auto prepared = bridge.prepare_moddata(*context.session, context.checker, real);
     if (!prepared) return failure(prepared.failure());
+    auto parent = parent_exists("WriteText", real);
+    if (!parent) return failure(parent.failure());
     auto written = atomic ? Win32::write_atomic(real, data.value(), context.backup_for(real))
                           : Win32::write_in_place(real, data.value());
     if (!written) return failure(written.failure());
@@ -896,10 +902,10 @@ Reply append(FileBridgeMod& bridge, Call& call)
     if (!target) return failure(target.failure());
     const auto& real = target.value().real;
     if (target.value().probe.kind == Win32::Kind::directory) return failure(ErrorCode::invalid, "Append " + path + ": is a folder");
-    auto parent = parent_exists("Append", real);
-    if (!parent) return failure(parent.failure());
     auto prepared = bridge.prepare_moddata(*context.session, context.checker, real);
     if (!prepared) return failure(prepared.failure());
+    auto parent = parent_exists("Append", real);
+    if (!parent) return failure(parent.failure());
     auto written = Win32::append(real, data.value());
     if (!written) return failure(written.failure());
     return success(true);
@@ -950,10 +956,10 @@ Reply copy(FileBridgeMod& bridge, Call& call)
     auto destination = context.target("Copy", to, Access::write, true);
     if (!destination) return failure(destination.failure());
     const auto& real = destination.value().real;
-    auto parent = parent_exists("Copy", real);
-    if (!parent) return failure(parent.failure());
     auto prepared = bridge.prepare_moddata(*context.session, context.checker, real);
     if (!prepared) return failure(prepared.failure());
+    auto parent = parent_exists("Copy", real);
+    if (!parent) return failure(parent.failure());
     auto copied = Win32::copy_file(source.value().real, real, overwrite, overwrite ? context.backup_for(real) : std::string{});
     if (!copied) return failure(copied.failure());
     return success(true);
@@ -972,10 +978,10 @@ Reply move(FileBridgeMod& bridge, Call& call)
     auto destination = context.target("Move", to, Access::write, false);
     if (!destination) return failure(destination.failure());
     const auto& real = destination.value().real;
-    auto parent = parent_exists("Move", real);
-    if (!parent) return failure(parent.failure());
     auto prepared = bridge.prepare_moddata(*context.session, context.checker, real);
     if (!prepared) return failure(prepared.failure());
+    auto parent = parent_exists("Move", real);
+    if (!parent) return failure(parent.failure());
     auto moved = Win32::move_entry(source.value().real, real, overwrite, overwrite ? context.backup_for(real) : std::string{});
     if (!moved) return failure(moved.failure());
     return success(true);
@@ -997,6 +1003,8 @@ Reply stream_open(FileBridgeMod& bridge, Call& call)
     {
         return failure(ErrorCode::invalid, "Open " + path + ": savegames needs atomic writes that keep a .bak");
     }
+    auto prepared = bridge.prepare_moddata(*context.session, context.checker, real);
+    if (!prepared) return failure(prepared.failure());
     auto parent = parent_exists("Open", real);
     if (!parent) return failure(parent.failure());
     {
@@ -1006,8 +1014,6 @@ Reply stream_open(FileBridgeMod& bridge, Call& call)
             return failure(ErrorCode::io, "Open " + path + ": a Lua environment holds at most 64 open streams");
         }
     }
-    auto prepared = bridge.prepare_moddata(*context.session, context.checker, real);
-    if (!prepared) return failure(prepared.failure());
     auto stream = Win32::Stream::open(real, truncate, create, manual);
     if (!stream) return failure(stream.failure());
     const auto id = bridge.next_stream_id();
