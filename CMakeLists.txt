@@ -16,4 +16,5 @@ if(UE4SSLEB_BUILD_TESTS)
 endif()
 
 add_subdirectory(bootstrap)
+add_subdirectory(shared/dispatch)
 add_subdirectory(bridge-events)
