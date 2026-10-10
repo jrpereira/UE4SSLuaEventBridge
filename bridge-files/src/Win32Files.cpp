@@ -232,15 +232,22 @@ public:
         return win32_failure("WriteText", target, code);
     }
 
-    Status replace(const std::string& target, const std::string& temp, const std::string& backup) override
+    Core::ReplaceResult replace(const std::string& target, const std::string& temp, const std::string& backup) override
     {
         const auto backup_path = backup.empty() ? std::wstring{} : system_path(backup);
-        if (!ReplaceFileW(system_path(target).c_str(), system_path(temp).c_str(),
+        if (ReplaceFileW(system_path(target).c_str(), system_path(temp).c_str(),
                 backup.empty() ? nullptr : backup_path.c_str(), 0, nullptr, nullptr))
         {
-            return last_failure("Replace", target);
+            return Core::ReplaceResult{};
         }
-        return Done{};
+        const DWORD code = GetLastError();
+        return Core::ReplaceResult{win32_failure("Replace", target, code),
+            Core::classify_replace_error(static_cast<uint32_t>(code), !backup.empty())};
+    }
+
+    void pause() override
+    {
+        Sleep(50);
     }
 
     Status rename_new(const std::string& temp, const std::string& target) override
