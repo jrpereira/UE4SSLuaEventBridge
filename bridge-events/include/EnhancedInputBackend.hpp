@@ -3,8 +3,7 @@
 #ifdef _WIN32
 
 #include <EnhancedInputABI.hpp>
-#include <QueueBuffers.hpp>
-#include <QueueCapacity.hpp>
+#include <SharedDispatch.hpp>
 
 #include <atomic>
 #include <cstdint>

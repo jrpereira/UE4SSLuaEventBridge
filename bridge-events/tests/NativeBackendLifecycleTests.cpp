@@ -4,8 +4,7 @@
 #include "../src/EnhancedInputBackend.cpp"
 #include <array>
 #include <barrier>
-#include <DispatchBacklog.hpp>
-#include <DispatchBudget.hpp>
+#include <SharedDispatch.hpp>
 #include <cassert>
 #include <cstdlib>
 #include <thread>

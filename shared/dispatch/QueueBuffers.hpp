@@ -2,7 +2,7 @@
 #include <vector>
 #include <atomic>
 #include <cstddef>
-namespace UE4SSLuaEventBridge {
+namespace UE4SSXB {
 // Publication/reset must happen under the same mutex as enqueue/drain.
 // The consumer uses this only to avoid locking an empty queue. A racing
 // enqueue may be observed at the next host update, as with normal draining.

@@ -1,11 +1,9 @@
 #include <EnhancedInputBackend.hpp>
 #include <EmbeddedLuaAPI.hpp>
 #include <SessionAliasIndex.hpp>
-#include <QueueDispatchSchedule.hpp>
+#include <SharedDispatch.hpp>
 #include <UE4SSABI.hpp>
 #include <Version.hpp>
-#include <DispatchBudget.hpp>
-#include <DispatchBacklog.hpp>
 #include <LifecycleRegistry.hpp>
 #include <LifetimeProbe.hpp>
 #include <ImplementationABI.h>

@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <string_view>
 
-namespace UE4SSLuaEventBridge
+namespace UE4SSXB
 {
 inline constexpr uint32_t default_queue_checks_per_second = 20;
 

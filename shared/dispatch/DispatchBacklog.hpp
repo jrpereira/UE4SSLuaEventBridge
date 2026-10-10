@@ -3,7 +3,7 @@
 #include <utility>
 #include <vector>
 
-namespace UE4SSLuaEventBridge {
+namespace UE4SSXB {
 // Consumer-owned. A fresh producer batch can only replace an exhausted batch.
 template<class T> class DispatchBacklog {
 public:

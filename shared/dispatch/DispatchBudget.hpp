@@ -2,7 +2,7 @@
 #include <chrono>
 #include <cstddef>
 
-namespace UE4SSLuaEventBridge {
+namespace UE4SSXB {
 // Non-preemptive: one slow callback can exceed the time allowance. Always make
 // at least one unit of progress; zero disables the corresponding limit.
 class DispatchBudget {

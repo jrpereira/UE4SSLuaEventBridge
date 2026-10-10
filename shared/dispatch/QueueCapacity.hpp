@@ -1,7 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
-namespace UE4SSLuaEventBridge {
+namespace UE4SSXB {
 // Used under the existing producer mutex; adds no mutex or atomic to each event.
 struct QueueCapacity {
     std::size_t limit{65536};

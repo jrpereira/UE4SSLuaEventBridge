@@ -3,7 +3,7 @@
 #ifdef _WIN32
 
 #include <algorithm>
-#include <QueueBuffers.hpp>
+#include <SharedDispatch.hpp>
 #include <sstream>
 #include <BindingSnapshot.hpp>
 #include <cstring>
