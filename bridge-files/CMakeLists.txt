@@ -13,12 +13,16 @@ if(NOT TARGET UE4SSXBDispatch)
     add_subdirectory("${UE4SSLFB_REPO_ROOT}/shared/dispatch" shared-dispatch)
 endif()
 
+# Descriptor magic 'LFB1': the bootstrap and the implementation must agree, and
+# FileBridgeMod.cpp checks it against NativeContract::implementation_magic.
+set(UE4SSLFB_MAGIC 0x4C464231)
+
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/packaging/main.json.in" "${CMAKE_CURRENT_BINARY_DIR}/main.json" @ONLY)
 add_bridge_bootstrap(
     TARGET UE4SSLFBBootstrap
     PRODUCT UE4SSLuaFileBridge
     DISPLAY_NAME "UE4SS Lua File Bridge"
-    MAGIC 0x4C464231
+    MAGIC ${UE4SSLFB_MAGIC}
     CLAIM_NAME UE4SSLFB
     VERSION_FILE "${CMAKE_CURRENT_SOURCE_DIR}/contract/Version.hpp"
     DIST_FOLDER 0_ModCore_UE4SSLuaFileBridge
@@ -70,7 +74,7 @@ if(WIN32)
     add_dependencies(UE4SSLuaFileBridgeImplementation UE4SSLFBImportLibrary)
     target_compile_features(UE4SSLuaFileBridgeImplementation PRIVATE cxx_std_20)
     target_compile_definitions(UE4SSLuaFileBridgeImplementation PRIVATE
-        UE4SSLEB_IMPLEMENTATION_MAGIC=0x4C464231 UNICODE _UNICODE)
+        UE4SSLEB_IMPLEMENTATION_MAGIC=${UE4SSLFB_MAGIC} UNICODE _UNICODE)
     target_include_directories(UE4SSLuaFileBridgeImplementation PRIVATE
         "${UE4SSLFB_GENERATED_INCLUDE_DIR}" include contract "${UE4SSLFB_REPO_ROOT}/contract")
     target_link_libraries(UE4SSLuaFileBridgeImplementation PRIVATE

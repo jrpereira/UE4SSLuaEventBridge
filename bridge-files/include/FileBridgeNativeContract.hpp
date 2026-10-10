@@ -234,7 +234,10 @@
 // DispatchBudget, DispatchBacklog). In on_update, when the schedule is due,
 // the bridge polls each active subscription's file (size via the held handle;
 // identity by re-opening the path at most every `tail_identity_check_ms`),
-// reads at most what the budget allows, splits lines, and calls the session's
+// reads at most what the budget allows (tuning: `tail_read_bytes_per_pass`
+// across all subscriptions, at most `tail_read_bytes_per_subscription` from
+// one file, round-robin by subscription id from where the last pass stopped),
+// splits lines, and calls the session's
 // dispatcher on the session's root `lua` state:
 //     dispatcher(kind, token, text, offset, flags)
 // This is the same thread, root state and lock discipline that bridge-events
@@ -270,6 +273,18 @@
 // roots and the shared locations, then empty `temp` in every
 // <user>/Saved/ModData/* folder that has an `.owner` marker.
 
+// ---------------------------------------------------------------------------
+// 8. Known limitations (0.1.0)
+// ---------------------------------------------------------------------------
+// * Results are pushed to Lua after the native's error handling: if Lua runs
+//   out of memory while receiving one (a read near max_read_bytes), the error
+//   is Lua's own and is not turned into `nil, code, message`.
+// * Temporary siblings left by a crash mid-write ("<name>.xbtmp-<pid>-<n>")
+//   are removed at bridge start only under ModData folders with an .owner
+//   marker; elsewhere (mod folders, savegames) they stay and List shows them.
+// * A Move of a link across volumes is refused (`invalid`): a copy would
+//   follow the link and leave a plain file.
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -299,6 +314,10 @@ inline constexpr int64_t max_subscriptions_per_session = 64;
 inline constexpr int64_t stream_buffer_bytes = 64 * 1024;
 inline constexpr int64_t tail_max_line_bytes = 1024 * 1024;
 inline constexpr int64_t tail_identity_check_ms = 250;
+// Tuning (not capacity limits): Tail file reads per dispatch pass (20 passes
+// per second by default), so polling can't stall UE4SS's update thread.
+inline constexpr int64_t tail_read_bytes_per_pass = 256 * 1024;
+inline constexpr int64_t tail_read_bytes_per_subscription = 64 * 1024;
 inline constexpr uint32_t default_max_deliveries_per_pass = 256;
 inline constexpr uint32_t default_max_dispatch_us = 2000;
 

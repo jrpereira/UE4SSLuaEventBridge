@@ -18,6 +18,7 @@
 #include <dispatch/DispatchBudget.hpp>
 #include <dispatch/QueueDispatchSchedule.hpp>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -47,8 +48,6 @@ using UE4SSLuaFileBridge::Core::TargetKind;
 namespace Contract = UE4SSLuaFileBridge::NativeContract;
 namespace Core = UE4SSLuaFileBridge::Core;
 namespace Win32 = UE4SSLuaFileBridge::Win32;
-
-constexpr std::size_t tail_read_bytes_per_pass = 64 * 1024;
 
 void report(std::string_view message)
 {
@@ -93,6 +92,10 @@ Reply success(Values&&... values)
     return reply;
 }
 
+// Runs after the native's try block: a Lua memory error while pushing (for
+// example a ReadBytes result near max_read_bytes) is raised by Lua itself and
+// can't be turned into `nil, code, message` here. Results are bounded by
+// max_read_bytes; see "Known limitations" in FileBridgeNativeContract.hpp.
 int push(const Lua& lua, const Reply& reply)
 {
     for (const auto& value : reply.values)
@@ -230,7 +233,41 @@ public:
         if (!backlog_.empty()) budget_exhausted_passes_.fetch_add(1, std::memory_order_relaxed);
     }
 
-    void on_lua_start(RC::StringViewType mod_name, Lua& lua, Lua&, Lua&, Lua*) override
+    void on_lua_start(RC::StringViewType mod_name, Lua& lua, Lua& main_lua, Lua& async_lua, Lua* hook_lua) override
+    {
+        // Nothing may escape into UE4SS's loop over C++ mods (contract section 2,
+        // step 5): log, publish nothing, and that mod has no UE4SSLuaFileBridge.
+        try
+        {
+            start_session(mod_name, lua);
+        }
+        catch (const std::exception& error)
+        {
+            report_start_failure(mod_name, error.what());
+        }
+        catch (...)
+        {
+            report_start_failure(mod_name, "unknown exception");
+        }
+        (void)main_lua;
+        (void)async_lua;
+        (void)hook_lua;
+    }
+
+    void report_start_failure(RC::StringViewType mod_name, std::string_view what)
+    {
+        try
+        {
+            const auto name = Core::utf16_to_utf8(std::u16string(mod_name.begin(), mod_name.end()));
+            report("starting the file bridge for mod \"" + (name ? *name : std::string("?")) + "\" failed: " +
+                std::string(what));
+        }
+        catch (...)
+        {
+        }
+    }
+
+    void start_session(RC::StringViewType mod_name, Lua& lua)
     {
         auto session = std::make_shared<Session>();
         session->id = next_session_id_.fetch_add(1);
@@ -373,9 +410,14 @@ public:
             refresh = !session.owner_refreshed;
             session.owner_refreshed = true;
         }
+        // The marker is bookkeeping: failing to update it (for example another
+        // session of the same mod writing it) is logged, never the caller's error.
         const auto exists = Win32::probe(owner);
-        if (!exists) return exists.failure();
-        if (exists.value().kind == Win32::Kind::missing || refresh)
+        if (!exists)
+        {
+            report("updating " + owner + " failed: " + exists.failure().message);
+        }
+        else if (exists.value().kind == Win32::Kind::missing || refresh)
         {
             const auto now = Win32::utc_timestamp();
             std::string first = now;
@@ -396,7 +438,7 @@ public:
             const std::string content = "folder=" + session.mod_name + "\nfirst_write=" + first + "\nlast_write=" + now +
                 "\nbridge_version=" + UE4SSLFB_VERSION + "\n";
             auto written = Win32::write_atomic(owner, content, {});
-            if (!written) return written;
+            if (!written) report("updating " + owner + " failed: " + written.failure().message);
         }
         if (const auto* temp = checker.location_real("temp"); temp && Core::is_within(real, *temp, &Win32::equal_fold))
         {
@@ -425,6 +467,7 @@ private:
         "UE4SSLFB_MAX_DISPATCH_US", Contract::default_max_dispatch_us, 1000000)};
     std::atomic_uint64_t delivered_{0};
     std::atomic_uint64_t budget_exhausted_passes_{0};
+    int64_t last_polled_subscription_{0}; // on_update only
 
     void register_natives(Lua& lua);
 
@@ -450,6 +493,35 @@ private:
             auto removed = Win32::remove_tree_entries(list);
             if (!removed) report("emptying " + temp + " failed: " + removed.failure().message);
         }
+        remove_stale_temp_siblings(base);
+    }
+
+    // Temporary siblings ("<name>.xbtmp-<pid>-<n>") left by an earlier process
+    // that stopped mid-write, under ModData folders with an .owner marker.
+    // Leftovers elsewhere (mod folders, savegames) are left alone in 0.1.0.
+    void remove_stale_temp_siblings(const std::string& base)
+    {
+        const auto current = Win32::process_id();
+        std::size_t removed = 0;
+        for (const auto& name : Win32::subfolders(base))
+        {
+            const auto folder = base + "/" + name;
+            const auto owner = Win32::probe(folder + "/.owner");
+            if (!owner || owner.value().kind != Win32::Kind::file) continue;
+            auto entries = Win32::enumerate_tree(folder);
+            if (!entries) continue;
+            std::vector<Win32::TreeEntry> stale;
+            for (auto& entry : entries.value())
+            {
+                if (entry.directory) continue;
+                const auto pid = Core::temp_sibling_pid(Core::leaf_name(entry.path));
+                if (pid && *pid != current) stale.push_back(std::move(entry));
+            }
+            auto status = Win32::remove_tree_entries(stale);
+            if (!status) report("removing leftover temporary files under " + folder + " failed: " + status.failure().message);
+            else removed += stale.size();
+        }
+        if (removed != 0) report("removed " + std::to_string(removed) + " leftover temporary file(s) under " + base);
     }
 
     void close_session(Session& session)
@@ -491,43 +563,53 @@ private:
         session.subscriptions.erase(subscription.id);
     }
 
+    // Reads at most Contract::tail_read_bytes_per_pass in total, at most
+    // tail_read_bytes_per_subscription from each file, going round-robin by
+    // subscription id from where the previous pass stopped.
     void collect_tail_deliveries()
     {
-        std::vector<std::shared_ptr<Session>> sessions;
+        std::vector<std::pair<std::shared_ptr<Session>, std::shared_ptr<Subscription>>> all;
         {
             std::scoped_lock lock(sessions_mutex_);
             for (auto& [_, session] : sessions_)
             {
-                if (session->active.load()) sessions.push_back(session);
+                if (!session->active.load()) continue;
+                std::scoped_lock session_lock(session->mutex);
+                for (auto& [__, subscription] : session->subscriptions) all.emplace_back(session, subscription);
             }
         }
+        if (all.empty()) return;
+        std::sort(all.begin(), all.end(), [](const auto& a, const auto& b) { return a.second->id < b.second->id; });
+        std::size_t start = 0;
+        while (start < all.size() && all[start].second->id <= last_polled_subscription_) ++start;
+        if (start == all.size()) start = 0;
+
         std::vector<Pending> batch;
         const auto now = std::chrono::steady_clock::now();
-        for (auto& session : sessions)
+        auto remaining = static_cast<std::size_t>(Contract::tail_read_bytes_per_pass);
+        for (std::size_t step = 0; step < all.size() && remaining > 0; ++step)
         {
-            std::vector<std::shared_ptr<Subscription>> subscriptions;
+            auto& [session, subscription] = all[(start + step) % all.size()];
+            last_polled_subscription_ = subscription->id;
+            if (!subscription->open.load()) continue;
+            std::vector<Core::TailDelivery> out;
+            std::size_t consumed = 0;
+            const auto allowance =
+                std::min(remaining, static_cast<std::size_t>(Contract::tail_read_bytes_per_subscription));
+            auto polled = subscription->file->poll(out, allowance, now, consumed);
+            remaining -= std::min(consumed, remaining);
+            for (auto& delivery : out)
             {
-                std::scoped_lock lock(session->mutex);
-                for (auto& [_, subscription] : session->subscriptions) subscriptions.push_back(subscription);
+                batch.push_back(Pending{session, subscription, Contract::DispatchKind::data, std::move(delivery.text),
+                    delivery.offset, delivery.flags});
             }
-            for (auto& subscription : subscriptions)
+            if (!polled)
             {
-                if (!subscription->open.load()) continue;
-                std::vector<Core::TailDelivery> out;
-                auto polled = subscription->file->poll(out, tail_read_bytes_per_pass, now);
-                for (auto& delivery : out)
-                {
-                    batch.push_back(Pending{session, subscription, Contract::DispatchKind::data, std::move(delivery.text),
-                        delivery.offset, delivery.flags});
-                }
-                if (!polled)
-                {
-                    const auto& failed = polled.failure();
-                    report(subscription->path + ": " + std::string(Contract::to_string(failed.code)) + " " + failed.message);
-                    close_subscription(*session, *subscription);
-                    batch.push_back(Pending{session, subscription, Contract::DispatchKind::closed,
-                        std::string(Contract::to_string(failed.code)) + "\t" + failed.message, 0, 0});
-                }
+                const auto& failed = polled.failure();
+                report(subscription->path + ": " + std::string(Contract::to_string(failed.code)) + " " + failed.message);
+                close_subscription(*session, *subscription);
+                batch.push_back(Pending{session, subscription, Contract::DispatchKind::closed,
+                    std::string(Contract::to_string(failed.code)) + "\t" + failed.message, 0, 0});
             }
         }
         if (batch.empty()) return;
@@ -616,12 +698,6 @@ struct Context
     {
         const auto* saves = checker.location_real("savegames");
         return saves && Core::is_within(real, *saves, &Win32::equal_fold) ? Core::backup_sibling(real) : std::string{};
-    }
-
-    bool in_savegames(const std::string& real)
-    {
-        const auto* saves = checker.location_real("savegames");
-        return saves && Core::is_within(real, *saves, &Win32::equal_fold);
     }
 };
 
@@ -996,13 +1072,10 @@ Reply stream_open(FileBridgeMod& bridge, Call& call)
     const bool truncate = (flags & Contract::OpenFlag::truncate) != 0;
     const bool create = (flags & Contract::OpenFlag::no_create) == 0;
     const bool manual = (flags & Contract::OpenFlag::manual_flush) != 0;
-    auto target = context.target("Open", path, truncate ? Access::write : Access::append, true);
+    // A truncating Open can't keep a .bak, so it bypasses the savegames backup (contract step 9).
+    auto target = context.target("Open", path, truncate ? Access::write : Access::append, true, truncate);
     if (!target) return failure(target.failure());
     const auto& real = target.value().real;
-    if (truncate && target.value().probe.kind == Win32::Kind::file && context.in_savegames(real))
-    {
-        return failure(ErrorCode::invalid, "Open " + path + ": savegames needs atomic writes that keep a .bak");
-    }
     auto prepared = bridge.prepare_moddata(*context.session, context.checker, real);
     if (!prepared) return failure(prepared.failure());
     auto parent = parent_exists("Open", real);
@@ -1017,9 +1090,20 @@ Reply stream_open(FileBridgeMod& bridge, Call& call)
     auto stream = Win32::Stream::open(real, truncate, create, manual);
     if (!stream) return failure(stream.failure());
     const auto id = bridge.next_stream_id();
+    std::shared_ptr<Win32::Stream> opened(std::move(stream.value()));
     {
+        // Re-checked at insert: another Lua thread of this mod may have opened one meanwhile.
         std::scoped_lock lock(context.session->mutex);
-        context.session->streams.emplace(id, std::shared_ptr<Win32::Stream>(std::move(stream.value())));
+        if (static_cast<int64_t>(context.session->streams.size()) < Contract::max_streams_per_session)
+        {
+            context.session->streams.emplace(id, opened);
+            opened.reset();
+        }
+    }
+    if (opened)
+    {
+        (void)opened->close();
+        return failure(ErrorCode::io, "Open " + path + ": a Lua environment holds at most 64 open streams");
     }
     return success(id, target.value().lexical);
 }
@@ -1106,7 +1190,12 @@ Reply tail_open(FileBridgeMod& bridge, Call& call)
     subscription->path = target.value().lexical;
     subscription->file = std::move(file.value());
     {
+        // Re-checked at insert: another Lua thread of this mod may have subscribed meanwhile.
         std::scoped_lock lock(context.session->mutex);
+        if (static_cast<int64_t>(context.session->subscriptions.size()) >= Contract::max_subscriptions_per_session)
+        {
+            return failure(ErrorCode::io, "Tail " + path + ": a Lua environment holds at most 64 subscriptions");
+        }
         context.session->subscriptions.emplace(subscription->id, subscription);
     }
     return success(subscription->id, target.value().lexical);

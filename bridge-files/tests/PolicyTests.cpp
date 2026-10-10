@@ -263,6 +263,9 @@ void owner_and_savegames()
     CHECK(f.refused("savegames/a.sav", Access::write, ErrorCode::invalid, TargetKind::file, true, true));
     CHECK(f.allowed("savegames/a.sav", Access::write));
     CHECK(f.check("mod/a.txt", Access::write, TargetKind::file, true, true).ok());
+    // A truncating Open bypasses the backup whether or not the save exists yet.
+    CHECK(f.refused("savegames/new.sav", Access::write, ErrorCode::invalid, TargetKind::file, true, true));
+    CHECK(f.refused("savegames/sub/new.sav", Access::write, ErrorCode::invalid, TargetKind::file, true, true));
 }
 
 void links()

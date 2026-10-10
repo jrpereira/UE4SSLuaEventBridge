@@ -138,8 +138,11 @@ private:
 
 constexpr DWORD share_all = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
 
-Status write_all(HANDLE handle, std::string_view data, std::string_view operation, const std::string& path)
+// `total` receives the bytes written, also when it fails part-way.
+Status write_all(HANDLE handle, std::string_view data, std::string_view operation, const std::string& path,
+    std::size_t* total = nullptr)
 {
+    if (total) *total = 0;
     while (!data.empty())
     {
         const DWORD chunk = static_cast<DWORD>(std::min<std::size_t>(data.size(), 1u << 30));
@@ -147,6 +150,7 @@ Status write_all(HANDLE handle, std::string_view data, std::string_view operatio
         if (!WriteFile(handle, data.data(), chunk, &written, nullptr)) return last_failure(operation, path);
         if (written == 0) return Failure{ErrorCode::io, std::string(operation) + " " + path + ": nothing was written"};
         data.remove_prefix(written);
+        if (total) *total += written;
     }
     return Done{};
 }
@@ -232,15 +236,22 @@ public:
         return win32_failure("WriteText", target, code);
     }
 
-    Status replace(const std::string& target, const std::string& temp, const std::string& backup) override
+    Core::ReplaceResult replace(const std::string& target, const std::string& temp, const std::string& backup) override
     {
         const auto backup_path = backup.empty() ? std::wstring{} : system_path(backup);
-        if (!ReplaceFileW(system_path(target).c_str(), system_path(temp).c_str(),
+        if (ReplaceFileW(system_path(target).c_str(), system_path(temp).c_str(),
                 backup.empty() ? nullptr : backup_path.c_str(), 0, nullptr, nullptr))
         {
-            return last_failure("Replace", target);
+            return Core::ReplaceResult{};
         }
-        return Done{};
+        const DWORD code = GetLastError();
+        return Core::ReplaceResult{win32_failure("Replace", target, code),
+            Core::classify_replace_error(static_cast<uint32_t>(code), !backup.empty())};
+    }
+
+    void pause() override
+    {
+        Sleep(50);
     }
 
     Status rename_new(const std::string& temp, const std::string& target) override
@@ -642,6 +653,13 @@ Status move_entry(const std::string& from, const std::string& to, bool overwrite
             return Done{};
         }
         const DWORD code = GetLastError();
+        if (Core::classify_replace_error(static_cast<uint32_t>(code), true) == Core::ReplaceFault::target_free)
+        {
+            // 1177: the old destination is already the .bak and `from` kept its
+            // name; the destination name is free, so finish with a rename.
+            Win32AtomicOps ops({}, {});
+            return Core::finish_partial_replace(ops, to, from, backup, win32_failure("Move", to, code));
+        }
         if (code != ERROR_UNABLE_TO_MOVE_REPLACEMENT && code != ERROR_NOT_SAME_DEVICE) return win32_failure("Move", to, code);
     }
     else
@@ -652,6 +670,8 @@ Status move_entry(const std::string& from, const std::string& to, bool overwrite
         if (code != ERROR_NOT_SAME_DEVICE) return win32_failure("Move", to, code);
     }
     // Across volumes: copy (atomically, keeping the .bak), flush, then remove the source.
+    // A copy would follow a link and leave a plain file, so links stay on their volume.
+    if (source.value().link) return Failure{ErrorCode::invalid, "Move " + from + ": links aren't moved across volumes"};
     auto copied = atomic_into(to, {}, from, backup, overwrite);
     if (!copied) return copied;
     if (!DeleteFileW(system_path(from).c_str())) return last_failure("Move", from);
@@ -747,6 +767,16 @@ Status Stream::write_through(std::string_view data)
     return write_all(static_cast<HANDLE>(handle_), data, "Write", path_);
 }
 
+// Writes the buffer; on failure only the bytes that reached the file are
+// dropped, so a later Flush or Close retries the rest without a gap.
+Status Stream::flush_buffer()
+{
+    std::size_t written = 0;
+    auto status = write_all(static_cast<HANDLE>(handle_), buffer_, "Write", path_, &written);
+    buffer_.erase(0, written);
+    return status;
+}
+
 Status Stream::write(std::string_view data)
 {
     std::scoped_lock lock(mutex_);
@@ -754,9 +784,8 @@ Status Stream::write(std::string_view data)
     if (!manual_flush_) return write_through(data);
     if (buffer_.size() + data.size() > static_cast<std::size_t>(NativeContract::stream_buffer_bytes))
     {
-        auto flushed = write_through(buffer_);
-        buffer_.clear();
-        if (!flushed) return flushed;
+        auto flushed = flush_buffer();
+        if (!flushed) return flushed; // `data` isn't taken; the buffer keeps what didn't reach the file
         if (data.size() >= static_cast<std::size_t>(NativeContract::stream_buffer_bytes)) return write_through(data);
     }
     buffer_.append(data);
@@ -767,16 +796,16 @@ Status Stream::flush()
 {
     std::scoped_lock lock(mutex_);
     if (!handle_) return Failure{ErrorCode::invalid, "stream is closed"};
-    auto flushed = write_through(buffer_);
-    buffer_.clear();
-    return flushed;
+    return flush_buffer();
 }
 
 Status Stream::close()
 {
     std::scoped_lock lock(mutex_);
     if (!handle_) return Done{};
-    Status flushed = buffer_.empty() ? Status{Done{}} : write_through(buffer_);
+    // Closing always releases the file; data that still can't be written is
+    // reported and then dropped with the stream.
+    Status flushed = buffer_.empty() ? Status{Done{}} : flush_buffer();
     buffer_.clear();
     CloseHandle(static_cast<HANDLE>(handle_));
     handle_ = nullptr;
@@ -849,33 +878,45 @@ TailFile::~TailFile()
 void TailFile::release()
 {
     if (handle_) CloseHandle(static_cast<HANDLE>(handle_));
+    if (next_handle_) CloseHandle(static_cast<HANDLE>(next_handle_));
     handle_ = nullptr;
+    next_handle_ = nullptr;
+    switching_ = false;
 }
 
-Status TailFile::poll(std::vector<Core::TailDelivery>& out, std::size_t budget_bytes, std::chrono::steady_clock::time_point now)
+namespace
 {
-    const auto adopt = [&](HANDLE handle, const Identity& identity, bool rotated) {
-        release();
-        handle_ = handle;
-        identity_[0] = identity.volume;
-        identity_[1] = identity.index;
-        if (rotated || seen_) state_.reset();
-        else state_.start_at(0);
-        seen_ = true;
-    };
+// A file deleted while another handle (ours) keeps it open is "delete
+// pending": opening its path fails with access denied until the last handle
+// closes.
+bool delete_pending(HANDLE handle)
+{
+    FILE_STANDARD_INFO info{};
+    return GetFileInformationByHandleEx(handle, FileStandardInfo, &info, sizeof(info)) && info.DeletePending;
+}
+}
 
-    const bool check_identity = !handle_ || now >= next_identity_check_;
-    if (check_identity)
+Status TailFile::poll(std::vector<Core::TailDelivery>& out, std::size_t budget_bytes,
+    std::chrono::steady_clock::time_point now, std::size_t& consumed)
+{
+    consumed = 0;
+    // Look for rotation or deletion, unless the old file is still being drained.
+    if (!switching_ && (!handle_ || now >= next_identity_check_))
     {
         next_identity_check_ = now + std::chrono::milliseconds(NativeContract::tail_identity_check_ms);
         HANDLE fresh = open_for_tail(path_);
         if (fresh == INVALID_HANDLE_VALUE)
         {
             const DWORD code = GetLastError();
-            if (code == ERROR_FILE_NOT_FOUND || code == ERROR_DELETE_PENDING || code == ERROR_SHARING_VIOLATION)
+            const bool gone = code == ERROR_FILE_NOT_FOUND || code == ERROR_DELETE_PENDING ||
+                (code == ERROR_ACCESS_DENIED && handle_ && delete_pending(static_cast<HANDLE>(handle_)));
+            if (gone)
             {
-                // Deleted (or briefly unavailable): keep reading what the held handle has, wait for a new file.
-                if (code == ERROR_FILE_NOT_FOUND || code == ERROR_DELETE_PENDING) release();
+                if (!handle_) return Done{};
+                switching_ = true; // drain what the held handle still has, then wait for a new file
+            }
+            else if (code == ERROR_SHARING_VIOLATION)
+            {
                 if (!handle_) return Done{};
             }
             else
@@ -893,9 +934,23 @@ Status TailFile::poll(std::vector<Core::TailDelivery>& out, std::size_t budget_b
                 CloseHandle(fresh);
                 return failure;
             }
-            if (!handle_ || identity.volume != identity_[0] || identity.index != identity_[1])
+            if (!handle_)
             {
-                adopt(fresh, identity, handle_ != nullptr);
+                // First appearance, or a new file after a deletion.
+                handle_ = fresh;
+                identity_[0] = identity.volume;
+                identity_[1] = identity.index;
+                if (seen_) state_.reset();
+                else state_.start_at(0);
+                seen_ = true;
+            }
+            else if (identity.volume != identity_[0] || identity.index != identity_[1])
+            {
+                // Rotated: finish the old file first, then switch.
+                next_handle_ = fresh;
+                next_identity_[0] = identity.volume;
+                next_identity_[1] = identity.index;
+                switching_ = true;
             }
             else
             {
@@ -909,19 +964,40 @@ Status TailFile::poll(std::vector<Core::TailDelivery>& out, std::size_t budget_b
     if (!GetFileSizeEx(static_cast<HANDLE>(handle_), &size)) return last_failure("Tail", path_);
     state_.observe_size(size.QuadPart);
     const int64_t available = size.QuadPart - state_.read_offset();
-    if (available <= 0) return Done{};
-    const auto wanted = static_cast<std::size_t>(std::min<int64_t>(available, static_cast<int64_t>(budget_bytes)));
-    std::string bytes(wanted, '\0');
-    LARGE_INTEGER position{};
-    position.QuadPart = state_.read_offset();
-    if (!SetFilePointerEx(static_cast<HANDLE>(handle_), position, nullptr, FILE_BEGIN)) return last_failure("Tail", path_);
-    DWORD got = 0;
-    if (!ReadFile(static_cast<HANDLE>(handle_), bytes.data(), static_cast<DWORD>(bytes.size()), &got, nullptr))
+    int64_t got_total = 0;
+    if (available > 0 && budget_bytes > 0)
     {
-        return last_failure("Tail", path_);
+        const auto wanted = static_cast<std::size_t>(std::min<int64_t>(available, static_cast<int64_t>(budget_bytes)));
+        std::string bytes(wanted, '\0');
+        LARGE_INTEGER position{};
+        position.QuadPart = state_.read_offset();
+        if (!SetFilePointerEx(static_cast<HANDLE>(handle_), position, nullptr, FILE_BEGIN)) return last_failure("Tail", path_);
+        DWORD got = 0;
+        if (!ReadFile(static_cast<HANDLE>(handle_), bytes.data(), static_cast<DWORD>(bytes.size()), &got, nullptr))
+        {
+            return last_failure("Tail", path_);
+        }
+        bytes.resize(got);
+        consumed = got;
+        got_total = got;
+        state_.feed(bytes, out);
     }
-    bytes.resize(got);
-    state_.feed(bytes, out);
+
+    if (switching_ && got_total >= available)
+    {
+        // The old file is drained: its held partial line is discarded (API.md
+        // "Truncation and rotation") and reading moves to the new file, if any.
+        CloseHandle(static_cast<HANDLE>(handle_));
+        handle_ = next_handle_;
+        next_handle_ = nullptr;
+        switching_ = false;
+        if (handle_)
+        {
+            identity_[0] = next_identity_[0];
+            identity_[1] = next_identity_[1];
+            state_.reset();
+        }
+    }
     return Done{};
 }
 }
