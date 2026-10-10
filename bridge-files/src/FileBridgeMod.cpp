@@ -1061,9 +1061,20 @@ Reply stream_open(FileBridgeMod& bridge, Call& call)
     auto stream = Win32::Stream::open(real, truncate, create, manual);
     if (!stream) return failure(stream.failure());
     const auto id = bridge.next_stream_id();
+    std::shared_ptr<Win32::Stream> opened(std::move(stream.value()));
     {
+        // Re-checked at insert: another Lua thread of this mod may have opened one meanwhile.
         std::scoped_lock lock(context.session->mutex);
-        context.session->streams.emplace(id, std::shared_ptr<Win32::Stream>(std::move(stream.value())));
+        if (static_cast<int64_t>(context.session->streams.size()) < Contract::max_streams_per_session)
+        {
+            context.session->streams.emplace(id, opened);
+            opened.reset();
+        }
+    }
+    if (opened)
+    {
+        (void)opened->close();
+        return failure(ErrorCode::io, "Open " + path + ": a Lua environment holds at most 64 open streams");
     }
     return success(id, target.value().lexical);
 }
@@ -1150,7 +1161,12 @@ Reply tail_open(FileBridgeMod& bridge, Call& call)
     subscription->path = target.value().lexical;
     subscription->file = std::move(file.value());
     {
+        // Re-checked at insert: another Lua thread of this mod may have subscribed meanwhile.
         std::scoped_lock lock(context.session->mutex);
+        if (static_cast<int64_t>(context.session->subscriptions.size()) >= Contract::max_subscriptions_per_session)
+        {
+            return failure(ErrorCode::io, "Tail " + path + ": a Lua environment holds at most 64 subscriptions");
+        }
         context.session->subscriptions.emplace(subscription->id, subscription);
     }
     return success(subscription->id, target.value().lexical);
