@@ -7,8 +7,8 @@ trap 'rm -rf "${build_dir}"' EXIT
 generated_dir="${build_dir}/generated"
 mkdir -p "${generated_dir}"
 header="${generated_dir}/EmbeddedLuaAPI.hpp"
-# Mirror bridge/CMakeLists.txt: as many fixed-size chunks as the API needs.
-lua_api="${repo_root}/bridge/lua/bridge_api.lua"
+# Mirror bridge-events/CMakeLists.txt: as many fixed-size chunks as the API needs.
+lua_api="${repo_root}/bridge-events/lua/bridge_api.lua"
 chunk_size=7000
 lua_size="$(wc -c < "${lua_api}")"
 chunk_count=$(( (lua_size + chunk_size - 1) / chunk_size ))
@@ -31,12 +31,13 @@ g++ \
     -D_WIN32 \
     '-D__declspec(x)=' \
     -I"${build_dir}/generated" \
-    -I"${repo_root}/bridge/include" \
+    -I"${repo_root}/bridge-events/include" \
+    -I"${repo_root}/bridge-events/contract" \
     -I"${repo_root}/contract" \
     -Wall \
     -Wextra \
     -Wpedantic \
     -Werror \
     -fsyntax-only \
-    "${repo_root}/bridge/src/BridgeMod.cpp" \
-    "${repo_root}/bridge/src/EnhancedInputBackend.cpp"
+    "${repo_root}/bridge-events/src/BridgeMod.cpp" \
+    "${repo_root}/bridge-events/src/EnhancedInputBackend.cpp"

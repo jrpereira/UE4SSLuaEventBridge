@@ -11,7 +11,7 @@ from deployment_preflight import digest
 
 def sources(root):
     paths = [root/'CMakeLists.txt']
-    for directory in ['bootstrap', 'bridge', 'contract', 'packaging', 'tests']:
+    for directory in ['bootstrap', 'bridge-events', 'contract', 'tests']:
         paths.extend(p for p in (root/directory).rglob('*') if p.is_file()
                      and '__pycache__' not in p.parts and p.suffix not in {'.pyc','.pyo'})
     result = {}
@@ -25,7 +25,7 @@ def sources(root):
 
 
 def version(root):
-    text = (root/'contract/Version.hpp').read_text()
+    text = (root/'bridge-events/contract/Version.hpp').read_text()
     match = re.search(r'^#define UE4SSLEB_VERSION "([^"]+)"', text, re.M)
     if not match:
         raise ValueError('Bridge version missing')
@@ -37,7 +37,7 @@ NATIVE_TEST_TARGETS = [
     'QueueBuffersTests', 'QueueDispatchScheduleTests', 'DispatchBudgetTests',
     'NativeBackendLifecycleTests', 'BootstrapSelectionTests',
 ]
-LUA_TEST_SUITES = ['tests/LuaHelperTests.lua', 'tests/LifecycleIntegrationTests.lua']
+LUA_TEST_SUITES = ['bridge-events/tests/LuaHelperTests.lua', 'bridge-events/tests/LifecycleIntegrationTests.lua']
 
 
 def find_lua(root, executable=None):

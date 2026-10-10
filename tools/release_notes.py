@@ -36,7 +36,7 @@ def extract_notes(changelog, tag):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--changelog', type=Path, default=Path('CHANGELOG.md'))
+    parser.add_argument('--changelog', type=Path, default=Path('bridge-events/CHANGELOG.md'))
     parser.add_argument('--tag', required=True)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()

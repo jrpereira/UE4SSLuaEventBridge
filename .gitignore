@@ -66,4 +66,4 @@ evidence/
 runtime_evidence.py
 test_runtime_evidence.py
 reconstructed_history.json
-/examples/CapabilityProbe/
+/bridge-events/examples/CapabilityProbe/

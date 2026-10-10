@@ -161,7 +161,7 @@ function UE4SSLuaEventBridge_TraceScope(_session, scopeId, stage, ...)
     scopeTraces[#scopeTraces + 1] = { scope_id = scopeId, stage = stage }
 end
 
-local dispatch = assert(loadfile("bridge/lua/bridge_api.lua"))()
+local dispatch = assert(loadfile("bridge-events/lua/bridge_api.lua"))()
 local bridge = UE4SSLuaEventBridge
 local Helpers = bridge.Helpers
 local Trigger = Helpers.Trigger

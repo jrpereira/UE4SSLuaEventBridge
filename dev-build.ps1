@@ -27,7 +27,7 @@ try {
                 Invoke-Checked cl (@('/nologo', '/O2', '/MD', '/Felua.exe') + $sources)
             } finally { Pop-Location }
         }
-        Invoke-Checked $lua @('tests/LuaHelperTests.lua')
-        Invoke-Checked $lua @('tests/LifecycleIntegrationTests.lua')
+        Invoke-Checked $lua @('bridge-events/tests/LuaHelperTests.lua')
+        Invoke-Checked $lua @('bridge-events/tests/LifecycleIntegrationTests.lua')
     }
 } finally { Pop-Location }

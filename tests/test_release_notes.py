@@ -34,7 +34,7 @@ class ReleaseNotesTests(unittest.TestCase):
         self.assertEqual(extract_notes('## v0.3.4-rc.3\r\n\r\nHistorical.\r\n', 'v0.3.4-rc.3'), 'Historical.\n')
 
     def test_repository_sections_are_extractable(self):
-        text = (ROOT / 'CHANGELOG.md').read_text(encoding='utf-8')
+        text = (ROOT / 'bridge-events/CHANGELOG.md').read_text(encoding='utf-8')
         for tag in ['v1.0.1', 'v1.0.0', 'v0.3.4-rc.3', 'v0.3.4-rc.2', 'v0.3.3', 'v0.3.2']:
             with self.subTest(tag=tag):
                 self.assertTrue(extract_notes(text, tag).strip())

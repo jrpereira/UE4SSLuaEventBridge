@@ -2,9 +2,9 @@ cmake_minimum_required(VERSION 3.22)
 
 get_filename_component(UE4SSLEB_REPO_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 if(NOT DEFINED UE4SSLEB_PRODUCT_VERSION)
-    file(STRINGS "${UE4SSLEB_REPO_ROOT}/contract/Version.hpp" UE4SSLEB_VERSION_LINE REGEX "^#define UE4SSLEB_VERSION ")
+    file(STRINGS "${UE4SSLEB_REPO_ROOT}/bridge-events/contract/Version.hpp" UE4SSLEB_VERSION_LINE REGEX "^#define UE4SSLEB_VERSION ")
     if(NOT UE4SSLEB_VERSION_LINE MATCHES "\"([0-9]+\\.[0-9]+\\.[0-9]+)\"")
-        message(FATAL_ERROR "Invalid product version in contract/Version.hpp")
+        message(FATAL_ERROR "Invalid product version in bridge-events/contract/Version.hpp")
     endif()
     set(UE4SSLEB_PRODUCT_VERSION "${CMAKE_MATCH_1}")
 endif()
@@ -15,7 +15,7 @@ if(UE4SSLEB_BUILD_TESTS AND CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     enable_testing()
 endif()
 
-configure_file("${UE4SSLEB_REPO_ROOT}/packaging/main.json.in" "${CMAKE_CURRENT_BINARY_DIR}/main.json" @ONLY)
+configure_file("${UE4SSLEB_REPO_ROOT}/bridge-events/packaging/main.json.in" "${CMAKE_CURRENT_BINARY_DIR}/main.json" @ONLY)
 
 if(WIN32)
     if(NOT MSVC)
@@ -38,7 +38,7 @@ if(WIN32)
     add_custom_command(TARGET UE4SSLEBBootstrap POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_CURRENT_BINARY_DIR}/main.json"
             "${CMAKE_BINARY_DIR}/dist/0_ModCore_UE4SSLuaEventBridge/dlls/main.json"
-        COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${UE4SSLEB_REPO_ROOT}/packaging/enabled.txt"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${UE4SSLEB_REPO_ROOT}/bridge-events/packaging/enabled.txt"
             "${CMAKE_BINARY_DIR}/dist/0_ModCore_UE4SSLuaEventBridge/enabled.txt"
     )
 endif()

@@ -8,9 +8,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class VersionResourceTests(unittest.TestCase):
     def test_embedded_lua_literals_stay_within_msvc_limit(self):
-        source = (ROOT / 'bridge/lua/bridge_api.lua').read_text()
-        cmake = (ROOT / 'bridge/CMakeLists.txt').read_text()
-        template = (ROOT / 'bridge/cmake/EmbeddedLuaAPI.hpp.in').read_text()
+        source = (ROOT / 'bridge-events/lua/bridge_api.lua').read_text()
+        cmake = (ROOT / 'bridge-events/CMakeLists.txt').read_text()
+        template = (ROOT / 'bridge-events/cmake/EmbeddedLuaAPI.hpp.in').read_text()
         size = re.search(r'set\(UE4SSLEB_LUA_API_CHUNK_SIZE (\d+)\)', cmake)
         self.assertIsNotNone(size)
         # MSVC rejects string literals over about 16 KB; keep a wide margin.
@@ -21,7 +21,7 @@ class VersionResourceTests(unittest.TestCase):
         self.assertNotIn(')UE4SSLEB_LUA', source)
 
     def test_resource_and_packaging_share_canonical_version(self):
-        header = (ROOT / 'contract/Version.hpp').read_text()
+        header = (ROOT / 'bridge-events/contract/Version.hpp').read_text()
         match = re.search(r'^#define UE4SSLEB_VERSION "(\d+)\.(\d+)\.(\d+)"$', header, re.M)
         self.assertIsNotNone(match)
         major, minor, patch = match.groups()
@@ -29,7 +29,7 @@ class VersionResourceTests(unittest.TestCase):
         self.assertRegex(header, rf'(?m)^#define UE4SSLEB_VERSION_MINOR {minor}$')
         self.assertRegex(header, rf'(?m)^#define UE4SSLEB_VERSION_PATCH {patch}$')
 
-        template = (ROOT / 'bridge/resources/Version.rc.in').read_text()
+        template = (ROOT / 'bridge-events/resources/Version.rc.in').read_text()
         rendered = (template
             .replace('@PROJECT_VERSION_MAJOR@', major)
             .replace('@PROJECT_VERSION_MINOR@', minor)
@@ -40,13 +40,13 @@ class VersionResourceTests(unittest.TestCase):
         version = '.'.join(match.groups())
         self.assertIn(f'VALUE "OriginalFilename", "UE4SSLuaEventBridge-{version}.dll\\0"', rendered)
 
-        bridge_cmake = (ROOT / 'bridge/CMakeLists.txt').read_text()
+        bridge_cmake = (ROOT / 'bridge-events/CMakeLists.txt').read_text()
         bootstrap_cmake = (ROOT / 'bootstrap/CMakeLists.txt').read_text()
         self.assertIn('resources/Version.rc.in', bridge_cmake)
         self.assertIn('UE4SSLuaEventBridge-${UE4SSLEB_PRODUCT_VERSION}', bridge_cmake)
         self.assertIn('resources/Version.rc.in', bootstrap_cmake)
 
-        selector = (ROOT / 'packaging/main.json.in').read_text()
+        selector = (ROOT / 'bridge-events/packaging/main.json.in').read_text()
         self.assertIn('"schema": 1', selector)
         self.assertIn('"version": "@UE4SSLEB_PRODUCT_VERSION@"', selector)
 

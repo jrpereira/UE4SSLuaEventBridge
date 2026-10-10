@@ -12,9 +12,9 @@ from release_session import inspect_candidate
 
 class NativeCandidateTests(unittest.TestCase):
     def fixture(self, root):
-        (root/'contract').mkdir(parents=True)
-        (root/'contract/Version.hpp').write_text('#define UE4SSLEB_VERSION "1.2.3"')
-        for directory in ['bootstrap', 'bridge', 'packaging', 'tests']:
+        (root/'bridge-events/contract').mkdir(parents=True)
+        (root/'bridge-events/contract/Version.hpp').write_text('#define UE4SSLEB_VERSION "1.2.3"')
+        for directory in ['bootstrap', 'contract', 'tests']:
             (root/directory).mkdir()
         (root/'CMakeLists.txt').write_text('fixture')
         lua = root/'build/tools/lua-5.4.8/src/lua.exe'
@@ -46,10 +46,10 @@ class NativeCandidateTests(unittest.TestCase):
             staged = output/'dist/0_ModCore_UE4SSLuaEventBridge'
             result = inspect_candidate(manifest,staged,staged,root)
             self.assertFalse(result['needs_attention'])
-            (root/'bridge/new.hpp').write_text('new header')
+            (root/'bridge-events/new.hpp').write_text('new header')
             result = inspect_candidate(manifest,staged,staged,root)
             self.assertTrue(result['needs_attention'])
-            self.assertEqual(result['working_differences'], ['bridge/new.hpp'])
+            self.assertEqual(result['working_differences'], ['bridge-events/new.hpp'])
             self.assertFalse(result['staged_version_differs_from_working'])
             with self.assertRaises(ValueError):
                 native.build(root, output, self.runner(output))
@@ -105,7 +105,7 @@ class NativeCandidateTests(unittest.TestCase):
             def run(command, **kwargs):
                 self.runner(output)(command, **kwargs)
                 if command[0] == 'ctest':
-                    (root/'bridge/edited.cpp').write_text('changed during build')
+                    (root/'bridge-events/edited.cpp').write_text('changed during build')
             with self.assertRaises(RuntimeError):
                 native.build(root,output,run)
             self.assertFalse((output/'candidate-manifest.json').exists())

@@ -15,5 +15,5 @@ else
     exit 1
 fi
 
-"${lua_bin}" tests/LuaHelperTests.lua
-"${lua_bin}" tests/LifecycleIntegrationTests.lua
+"${lua_bin}" bridge-events/tests/LuaHelperTests.lua
+"${lua_bin}" bridge-events/tests/LifecycleIntegrationTests.lua

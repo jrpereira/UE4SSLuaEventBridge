@@ -1,7 +1,7 @@
 // Windows native integration: compile the production backend, replacing only
 // UE imports with controlled stubs. This is not Unreal runtime/GC acceptance.
 #define UE4SS_IMPORT
-#include "../bridge/src/EnhancedInputBackend.cpp"
+#include "../src/EnhancedInputBackend.cpp"
 #include <array>
 #include <barrier>
 #include <DispatchBacklog.hpp>
