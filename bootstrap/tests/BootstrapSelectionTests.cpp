@@ -58,13 +58,14 @@ int main()
     assert(candidate_order({}, std::nullopt).empty());
     assert(version_text({1, 0, 8}) == "1.0.8");
 
+    constexpr BridgeProduct events{L"UE4SSLuaEventBridge", L"UE4SSLEB", 0x4C454231u};
     CandidateMetadata metadata{
         {1, 0, 7}, L"UE4SSLuaEventBridge-1.0.7.dll", L"UE4SSLuaEventBridge-1.0.7.dll",
         L"UE4SSLuaEventBridge", L"Implementation", L"1", L"97b7e501", L"5.5"};
-    assert(compatible_candidate(metadata));
+    assert(compatible_candidate(events, metadata));
     metadata.ue4ss_commit = L"other";
-    assert(!compatible_candidate(metadata));
+    assert(!compatible_candidate(events, metadata));
     metadata.ue4ss_commit = L"97b7e501";
     metadata.original_filename = L"other.dll";
-    assert(!compatible_candidate(metadata));
+    assert(!compatible_candidate(events, metadata));
 }

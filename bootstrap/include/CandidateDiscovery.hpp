@@ -61,10 +61,42 @@ struct CandidateMetadata
     std::wstring unreal_version;
 };
 
-inline std::wstring candidate_filename(const SemanticVersion& version)
+// The identity of the product a bootstrap loads. Each product's build supplies
+// its own (see bootstrap/cmake/BridgeBootstrap.cmake); the logic below is shared.
+struct BridgeProduct
 {
-    return L"UE4SSLuaEventBridge-" + std::to_wstring(version.major) + L"." +
+    // ProductName of the implementation DLLs and their file name prefix
+    // (<name>-<major>.<minor>.<patch>.dll). ASCII letters and digits only.
+    std::wstring_view name;
+    // Base name of the per-process claim (Local\<claim>-<pid>-<UE4SS commit>).
+    std::wstring_view claim;
+    // Descriptor magic the implementation must report.
+    uint32_t magic{};
+};
+
+inline constexpr std::wstring_view bootstrap_ue4ss_commit{L"97b7e501"};
+
+inline std::wstring candidate_filename(const BridgeProduct& product, const SemanticVersion& version)
+{
+    return std::wstring{product.name} + L"-" + std::to_wstring(version.major) + L"." +
            std::to_wstring(version.minor) + L"." + std::to_wstring(version.patch) + L".dll";
+}
+
+// Mutex name that keeps one bootstrap of a product per process. Products have
+// distinct claims, so their bootstraps never block each other.
+inline std::wstring bootstrap_claim_name(const BridgeProduct& product, unsigned long process_id)
+{
+    return L"Local\\" + std::wstring{product.claim} + L"-" + std::to_wstring(process_id) + L"-" +
+           std::wstring{bootstrap_ue4ss_commit};
+}
+
+inline std::string bootstrap_log_prefix(const BridgeProduct& product)
+{
+    std::string prefix{"["};
+    for (const auto character : product.name)
+        prefix.push_back(character > 0 && character < 0x80 ? static_cast<char>(character) : '?');
+    prefix.append(" bootstrap] ");
+    return prefix;
 }
 
 inline bool same_candidate_name(const std::wstring& left, const std::wstring& right)
@@ -84,12 +116,12 @@ inline bool same_candidate_name(const std::wstring& left, const std::wstring& ri
 #endif
 }
 
-inline bool compatible_candidate(const CandidateMetadata& metadata)
+inline bool compatible_candidate(const BridgeProduct& product, const CandidateMetadata& metadata)
 {
-    const auto expected = candidate_filename(metadata.version);
-    return metadata.product_name == L"UE4SSLuaEventBridge" &&
+    const auto expected = candidate_filename(product, metadata.version);
+    return !product.name.empty() && metadata.product_name == product.name &&
            metadata.role == L"Implementation" && metadata.implementation_abi == L"1" &&
-           metadata.ue4ss_commit == L"97b7e501" && metadata.unreal_version == L"5.5" &&
+           metadata.ue4ss_commit == bootstrap_ue4ss_commit && metadata.unreal_version == L"5.5" &&
            same_candidate_name(metadata.filename, expected) &&
            same_candidate_name(metadata.original_filename, expected);
 }

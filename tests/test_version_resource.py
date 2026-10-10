@@ -41,7 +41,7 @@ class VersionResourceTests(unittest.TestCase):
         self.assertIn(f'VALUE "OriginalFilename", "UE4SSLuaEventBridge-{version}.dll\\0"', rendered)
 
         bridge_cmake = (ROOT / 'bridge-events/CMakeLists.txt').read_text()
-        bootstrap_cmake = (ROOT / 'bootstrap/CMakeLists.txt').read_text()
+        bootstrap_cmake = (ROOT / 'bootstrap/cmake/BridgeBootstrap.cmake').read_text()
         self.assertIn('resources/Version.rc.in', bridge_cmake)
         self.assertIn('UE4SSLuaEventBridge-${UE4SSLEB_PRODUCT_VERSION}', bridge_cmake)
         self.assertIn('resources/Version.rc.in', bootstrap_cmake)

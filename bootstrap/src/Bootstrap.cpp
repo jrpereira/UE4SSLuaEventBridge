@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <winver.h>
 
+#include <BootstrapIdentity.hpp>
 #include <CandidateDiscovery.hpp>
 #include <ImplementationABI.h>
 #include <LoaderConfig.hpp>
@@ -46,7 +47,7 @@ UE4SSOutputSend ue4ss_output()
 
 void log(std::string_view message)
 {
-    std::string line{"[UE4SSLuaEventBridge bootstrap] "};
+    std::string line{bootstrap_log_prefix(bootstrap_product)};
     line.append(message);
     line.push_back('\n');
     OutputDebugStringA(line.c_str());
@@ -134,7 +135,7 @@ std::vector<BootstrapCandidate> discover(const std::filesystem::path& directory)
         if (iterator->is_symlink(error) || error || !iterator->is_regular_file(error) || error ||
             !same_name(iterator->path().extension().wstring(), L".dll")) continue;
         const auto metadata = read_metadata(iterator->path());
-        if (!metadata || !compatible_candidate(*metadata)) continue;
+        if (!metadata || !compatible_candidate(bootstrap_product, *metadata)) continue;
         result.push_back({metadata->version, iterator->path()});
     }
     return result;
@@ -155,7 +156,7 @@ LoaderConfig load_config(const std::filesystem::path& path)
 bool descriptor_matches(const UE4SSLEB_ImplementationV1* api, const SemanticVersion& version)
 {
     return api && api->struct_size >= sizeof(UE4SSLEB_ImplementationV1) &&
-           api->magic == UE4SSLEB_IMPLEMENTATION_MAGIC &&
+           api->magic == bootstrap_product.magic &&
            api->abi_version == UE4SSLEB_IMPLEMENTATION_ABI &&
            api->ue4ss_commit == UE4SSLEB_TARGET_UE4SS_COMMIT && api->start && api->uninstall &&
            api->version_major == version.major && api->version_minor == version.minor &&
@@ -173,7 +174,7 @@ UE4SSLEB_BOOTSTRAP_API void* start_mod()
         log("start_mod called more than once");
         return nullptr;
     }
-    const auto claim_name = L"Local\\UE4SSLEB-" + std::to_wstring(GetCurrentProcessId()) + L"-97b7e501";
+    const auto claim_name = bootstrap_claim_name(bootstrap_product, GetCurrentProcessId());
     bootstrap_claim = CreateMutexW(nullptr, FALSE, claim_name.c_str());
     if (!bootstrap_claim || GetLastError() == ERROR_ALREADY_EXISTS)
     {
