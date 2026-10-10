@@ -23,6 +23,7 @@ jobs:
       - run: bash tests/run-portable-tests.sh
       - run: bash tests/run-lua-tests.sh
       - run: bash tests/run-abi-syntax-test.sh
+      - run: bash tests/run-product-tests.sh
 
   windows-dll:
     runs-on: windows-2022
@@ -36,22 +37,30 @@ jobs:
       - name: Native lifecycle tests and build
         shell: pwsh
         run: ./tools/ci-windows-native.ps1
-      - name: Verify DLL version resource
+      # One verify-and-package step per product; a product runs only once its folder exists.
+      - name: Verify and package bridge-events
+        id: bridge-events
+        if: hashFiles('bridge-events/CMakeLists.txt') != ''
         shell: pwsh
-        run: |
-          $metadata = & ./tools/release-metadata.ps1
-          ./tools/test-dll-version.ps1 -Dll build/dist/0_ModCore_UE4SSLuaEventBridge/dlls/main.dll -ExpectedProductName 'UE4SSLuaEventBridge Bootstrap' -ExpectedOriginalFilename 'main.dll'
-          ./tools/test-dll-version.ps1 -Dll "build/dist/0_ModCore_UE4SSLuaEventBridge/dlls/versions/UE4SSLuaEventBridge-$($metadata.version).dll" -ExpectedOriginalFilename "UE4SSLuaEventBridge-$($metadata.version).dll"
-      - name: Package
-        id: metadata
-        shell: pwsh
-        run: |
-          $metadata = & ./tools/release-metadata.ps1 -OutputFile $env:GITHUB_OUTPUT
-          & ./tools/package-release.ps1 -Distribution build/dist/0_ModCore_UE4SSLuaEventBridge -OutputDirectory . -SourceCommit $env:GITHUB_SHA
+        run: ./tools/ci-package-product.ps1 -Product bridge-events -SourceCommit $env:GITHUB_SHA -OutputFile $env:GITHUB_OUTPUT
       - uses: actions/upload-artifact@v4
+        if: steps.bridge-events.outcome == 'success'
         with:
-          name: UE4SSLuaEventBridge-${{ steps.metadata.outputs.tag }}
+          name: ${{ steps.bridge-events.outputs.artifact }}
           path: |
-            ${{ steps.metadata.outputs.archive }}
-            ${{ steps.metadata.outputs.archive }}.manifest.json
-            ${{ steps.metadata.outputs.archive }}.sha256
+            ${{ steps.bridge-events.outputs.archive }}
+            ${{ steps.bridge-events.outputs.archive }}.manifest.json
+            ${{ steps.bridge-events.outputs.archive }}.sha256
+      - name: Verify and package bridge-files
+        id: bridge-files
+        if: hashFiles('bridge-files/CMakeLists.txt') != ''
+        shell: pwsh
+        run: ./tools/ci-package-product.ps1 -Product bridge-files -SourceCommit $env:GITHUB_SHA -OutputFile $env:GITHUB_OUTPUT
+      - uses: actions/upload-artifact@v4
+        if: steps.bridge-files.outcome == 'success'
+        with:
+          name: ${{ steps.bridge-files.outputs.artifact }}
+          path: |
+            ${{ steps.bridge-files.outputs.archive }}
+            ${{ steps.bridge-files.outputs.archive }}.manifest.json
+            ${{ steps.bridge-files.outputs.archive }}.sha256

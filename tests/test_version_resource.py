@@ -54,9 +54,12 @@ class VersionResourceTests(unittest.TestCase):
         self.assertIn("test-dll-version.ps1') -Dll $bootstrap", packager)
         self.assertIn("test-dll-version.ps1') -Dll $implementation", packager)
 
+        # Both workflows verify DLL versions through the per-product CI packager.
+        ci_packager = (ROOT / 'tools/ci-package-product.ps1').read_text()
+        self.assertEqual(ci_packager.count('test-dll-version.ps1'), 2)
         for workflow in ['build.yml', 'release.yml']:
             source = (ROOT / '.github/workflows' / workflow).read_text()
-            self.assertIn('test-dll-version.ps1', source)
+            self.assertIn('ci-package-product.ps1', source)
 
 
 if __name__ == '__main__':
